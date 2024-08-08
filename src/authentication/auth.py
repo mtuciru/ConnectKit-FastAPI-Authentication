@@ -40,16 +40,6 @@ def parse_forwarded_for(data: str) -> List[str]:
     return list(map(lambda s: s.strip(), data.split(",")))
 
 
-def parse_forwarded(data: str) -> List[str]:
-    result = []
-    for composite in list(map(lambda s: s.strip(), data.split(","))):
-        for pairs in list(map(lambda s: s.strip().lower(), composite.split(";"))):
-            if pairs.startswith("for="):
-                result.append(pairs.removeprefix("for="))
-                continue
-    return result
-
-
 def get_real_client_ip(request: Request):
     ip = request.client[0]
     if "X-Forwarded-For" in request.headers:
@@ -58,10 +48,13 @@ def get_real_client_ip(request: Request):
             return ip
         ip = ips[0]
     elif "Forwarded" in request.headers:
-        ips = parse_forwarded(request.headers["Forwarded"])
-        if ips[-1] != ip:
-            return ip
-        ip = ips[0]
+        parsed = headers.parse_forwarded(request.headers["Forwarded"])
+        for p in parsed:
+            if "for" in p:
+                ip = p["for"]
+                break
+    elif "X-Real-IP" in request.headers:
+        ip = request.headers["X-Real-IP"]
     return ip
 
 
@@ -222,3 +215,12 @@ async def get_account(request: Request,
         raise errors.account_not_active()
     account.auth_time = session.created_at.timestamp()
     return account
+
+
+async def try_account(request: Request,
+                      db: AsyncSession = Depends(get_database)) -> Optional[Account]:
+    """Получение пользователя, если он есть"""
+    access = request.cookies.get("access")
+    if access is None:
+        return None
+    return await get_account(request, db)
