@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Optional, List, Annotated, Dict, Any
 
 from pydantic import BaseModel as PydanticBaseModel, ConfigDict, AfterValidator
+from email_validator import validate_email, EmailNotValidError
 
 from authentication.settings import settings
 
@@ -20,11 +21,29 @@ _password_rule_upper = re.compile("[A-Z]")
 _password_rule_special = re.compile(r"[-~!@#$%№^&*(){}\[\]|/\\<>?_+=]")
 
 
+def can_send_email(email: str) -> bool:
+    try:
+        email_info = validate_email(email, check_deliverability=True)
+        return True
+    except EmailNotValidError:
+        return False
+
+
 def login_rules(login: str):
-    match = _login_rule.fullmatch(login)
-    if match is None:
-        raise ValueError(f"Invalid login format")
-    return login
+    if settings.SECURE_LOGIN_EMAIL:
+        # Login as email address
+        try:
+            email_info = validate_email(login, check_deliverability=False)
+            login = email_info.normalized
+            return login
+        except EmailNotValidError:
+            raise ValueError(f"Invalid email format")
+    else:
+        # Login as linux-like login
+        match = _login_rule.fullmatch(login)
+        if match is None:
+            raise ValueError(f"Invalid login format")
+        return login
 
 
 def password_rules(password: str):
@@ -49,14 +68,6 @@ password_type = Annotated[str, AfterValidator(password_rules)]
 
 class CSRFRequest(BaseModel):
     login: login_type
-
-
-class CSRFPayload(BaseModel):
-    required_login: str
-    uuid: str
-    used: bool = False
-    failed_count: int = 0
-    until_date: datetime
 
 
 class CSRFReturn(BaseModel):
@@ -89,14 +100,13 @@ class GetSessions(BaseModel):
 class NewAccount(BaseModel):
     login: login_type
     password: password_type
-    properties: Optional[Dict[str, Any]] = None
     active: Optional[bool] = False
 
 
 class UserInfo(BaseModel):
     login: str
     active: bool
-    properties: Dict[str, Any]
+    auth_datetime: datetime
 
 
 class NewPassword(BaseModel):

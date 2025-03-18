@@ -15,7 +15,7 @@ from authentication.auth import (get_session, init_tokens, refresh_tokens, get_a
                                  _get_unverified_session, _get_inactive_account)
 from authentication.models import LoginProtection, Account, AccountSession
 from authentication.schemes import (Refresh, AccountCredentials, GetSessions,
-                                    CSRFRequest, CSRFReturn, CSRFPayload,
+                                    CSRFRequest, CSRFReturn,
                                     SetupOTP, OTPCodes, OTPCode,
                                     UserInfo, NewPassword, PasswordVerify)
 from authentication.settings import settings
@@ -35,33 +35,25 @@ async def csrf(
     """Защита от перебора паролей и от утечки аккаунта"""
     await asyncio.sleep(random.random())  # Защита от определения поведения кода по времени исполнения
     protection = await db.scalar(select(LoginProtection).options(
-        load_only(LoginProtection.csrf_protector)
+        undefer_group("csrf")
     ).filter_by(login=params.login).with_for_update())
     if protection is None:
         protection = LoginProtection()
         protection.login = params.login
         db.add(protection)
         await db.commit()
-    if protection.csrf_protector is None:
-        csrf_payload = CSRFPayload(required_login=params.login,
-                                   uuid=str(uuid.uuid4()),
-                                   until_date=(datetime.now(tz=timezone.utc) + timedelta(seconds=1)))
-        protection.csrf_protector = csrf_payload.model_dump()
+    if protection.csrf_uuid is None:
+        if protection.csrf_until_date > datetime.now(tz=timezone.utc):
+            raise errors.csrf_too_many_requests()
+        protection.csrf_uuid = str(uuid.uuid4())
+        protection.csrf_until_date = datetime.now(tz=timezone.utc) + timedelta(
+            seconds=(1.5 * (protection.csrf_failed_count + 1)))
         await db.commit()
         return CSRFReturn.model_validate({
-            "csrf": csrf_payload.uuid
+            "csrf": protection.csrf_uuid
         })
-    csrf_payload = CSRFPayload.model_validate(protection.csrf_protector)
-    if csrf_payload.until_date > datetime.now(tz=timezone.utc):
-        raise errors.csrf_too_many_requests()
-    csrf_payload.until_date = datetime.now(tz=timezone.utc) + timedelta(
-        seconds=(1.5 * csrf_payload.failed_count))
-    csrf_payload.used = False
-    csrf_payload.uuid = str(uuid.uuid4())
-    protection.csrf_protector = csrf_payload.model_dump()
-    await db.commit()
     return CSRFReturn.model_validate({
-        "csrf": csrf_payload.uuid
+        "csrf": protection.csrf_uuid
     })
 
 
@@ -76,44 +68,43 @@ async def login(
 ):
     """Логин"""
     protection = await db.scalar(select(LoginProtection).options(
-        load_only(LoginProtection.csrf_protector, LoginProtection.otp_codes_init,
-                  LoginProtection.block, LoginProtection.block_reason)
+        undefer_group("csrf"),
+        undefer_group("block")
     ).filter_by(login=credentials.login).with_for_update())
     account = await db.scalar(select(Account).options(undefer_group("sensitive")).filter_by(login=credentials.login))
     await asyncio.sleep(random.random())
-    if protection is None or protection.csrf_protector is None:
+    if protection is None or protection.csrf_uuid is None:
         raise errors.invalid_credentials()
     if protection.block:
         raise errors.invalid_credentials(protection.block_reason)
     if account is None:
         raise errors.invalid_credentials()
     # Protect by CSRF
-    csrf_payload = CSRFPayload.model_validate(protection.csrf_protector)
-    if credentials.csrf != csrf_payload.uuid:
-        protection.block = True
-        protection.block_reason = "Access with not existed CSRF token. Account may be compromised."
-        await db.commit()
-        raise errors.invalid_credentials(protection.block_reason)
-    if csrf_payload.used:
-        protection.block = True
-        protection.block_reason = "Access with reused CSRF token. Account may be compromised."
-        await db.commit()
-        raise errors.invalid_credentials(protection.block_reason)
-    if not account.verify_password(credentials.password):
-        csrf_payload.used = True
-        csrf_payload.failed_count += 1
-        if csrf_payload.failed_count >= settings.SECURE_BLOCK_TRIES:
-            protection.block = True
-            protection.block_reason = "The limit of attempts has been reached. Access to administrator"
-            await db.commit()
-            raise errors.invalid_credentials(protection.block_reason)
-        protection.csrf_protector = csrf_payload.model_dump()
+    if credentials.csrf != protection.csrf_uuid:
+        # if settings.SECURE_STRICT_VERIFICATION:
+        #     protection.block = True
+        #     protection.block_reason = "Access with not existed CSRF token. Account may be compromised."
+        #     await db.commit()
+        #     raise errors.invalid_credentials(protection.block_reason)
+        # else:
+        protection.csrf_uuid = None
+        protection.csrf_failed_count += 1
         await db.commit()
         raise errors.invalid_credentials()
-    protection.csrf_protector = None
+    if not account.verify_password(credentials.password):
+        protection.csrf_uuid = None
+        protection.csrf_failed_count += 1
+        if 0 < settings.SECURE_BLOCK_TRIES <= protection.csrf_failed_count:
+            protection.block = True
+            protection.block_reason = "The limit of login attempts has been reached. Access to administrator"
+            await db.commit()
+            raise errors.invalid_credentials(protection.block_reason)
+        await db.commit()
+        raise errors.invalid_credentials()
+    protection.csrf_uuid = None
+    protection.csrf_failed_count = 0
     await db.commit()
-    return await init_tokens(account, credentials.remember_me, protection.otp_codes_init is not None, request,
-                             response, db)
+    return await init_tokens(account, credentials.remember_me, protection.otp_enabled, request, response, db)
 
 
 @router.post("/refresh", response_model=Refresh, responses=errors.with_errors(
@@ -174,7 +165,7 @@ async def get_me(account: Account = Depends(_get_inactive_account)):
     return UserInfo.model_validate({
         "login": account.login,
         "active": account.active,
-        "properties": await account.awaitable_attrs.properties,
+        "auth_datetime": account.auth_datetime
     })
 
 
@@ -216,9 +207,9 @@ if settings.SECURE_OTP_ENABLED:
     async def otp_setup(account: Account = Depends(get_account),
                         db: AsyncSession = Depends(get_database)):
         protection = await db.scalar(select(LoginProtection).options(
-            load_only(LoginProtection.otp_secret, LoginProtection.otp_codes_init)
+            undefer_group("otp")
         ).filter_by(login=account.login).with_for_update())
-        if protection.otp_codes_init is None:
+        if not protection.otp_enabled:
             if protection.otp_secret is None:
                 protection.otp_secret = get_secret()
                 await db.commit()
@@ -235,11 +226,11 @@ if settings.SECURE_OTP_ENABLED:
                                account: Account = Depends(get_account),
                                db: AsyncSession = Depends(get_database)):
         protection = await db.scalar(select(LoginProtection).options(
-            load_only(LoginProtection.otp_secret, LoginProtection.otp_codes_init)
+            undefer_group("otp")
         ).filter_by(login=account.login).with_for_update())
         if protection.otp_secret is None:
             raise errors.otp_setup_error()
-        if protection.otp_codes_init is not None:
+        if protection.otp_enabled:
             raise errors.otp_enabled()
         totp = TOTP(protection.otp_secret)
         if not totp.verify(otp_code.code):
@@ -256,6 +247,7 @@ if settings.SECURE_OTP_ENABLED:
             codes.append(code)
             codes_md5.append(md5(code.encode("UTF-8")).hexdigest())
         protection.otp_codes = codes_md5
+        protection.otp_enabled = True
         await db.commit()
         return OTPCodes(codes=codes)
 
@@ -267,9 +259,9 @@ if settings.SECURE_OTP_ENABLED:
                                account: Account = Depends(get_account),
                                db: AsyncSession = Depends(get_database)):
         protection = await db.scalar(select(LoginProtection).options(
-            load_only(LoginProtection.otp_codes_init)
+            undefer_group("otp_codes")
         ).filter_by(login=account.login).with_for_update())
-        if protection.otp_codes_init is None:
+        if not protection.otp_enabled:
             raise errors.otp_disabled()
         if not (await account.awaitable_attrs.verify_password(verify.password)):
             if settings.SECURE_STRICT_VERIFICATION:
@@ -306,6 +298,7 @@ if settings.SECURE_OTP_ENABLED:
                 protection.block_reason = "Password is incorrect when disabling 2FA."
                 await db.commit()
             raise errors.invalid_credentials("Verification failed")
+        protection.otp_enabled = False
         protection.otp_secret = None
         protection.otp_codes_secret = None
         protection.otp_codes_init = None
@@ -324,8 +317,7 @@ if settings.SECURE_OTP_ENABLED:
             return
         protection = await db.scalar(
             select(LoginProtection).options(
-                load_only(LoginProtection.otp_secret, LoginProtection.otp_codes,
-                          LoginProtection.otp_codes_secret, LoginProtection.otp_codes_init)
+                undefer_group("otp"), undefer_group("otp_codes")
             ).filter_by(login=(await account_session.awaitable_attrs.account).login).with_for_update())
         await asyncio.sleep(1)
         totp = TOTP(protection.otp_secret)
@@ -350,7 +342,7 @@ if settings.SECURE_OTP_ENABLED:
         except ValueError:
             _load = await account_session.awaitable_attrs.otp_attempts
             account_session.otp_attempts += 1
-            if account_session.otp_attempts >= settings.SECURE_OTP_BLOCK_TRIES:
+            if 0 < settings.SECURE_OTP_BLOCK_TRIES <= account_session.otp_attempts:
                 await db.delete(account_session)
                 await db.commit()
             raise errors.otp_verify_failed()

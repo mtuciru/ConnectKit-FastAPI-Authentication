@@ -1,14 +1,21 @@
-from typing import Tuple, Optional
+from hashlib import md5
+from typing import Tuple, Optional, Any, AsyncGenerator
 
+from pyotp import TOTP, HOTP
 from sqlalchemy import select
-from sqlalchemy.orm import load_only
+from sqlalchemy.orm import load_only, undefer_group
 
 from authentication.models import Account, LoginProtection
-from authentication.schemes import NewAccount
+from authentication.schemes import NewAccount, can_send_email
 from database.asyncio import AsyncDatabase, AsyncSession
 
+from authentication.settings import settings
 
-async def create_new_account(new_account: NewAccount) -> Account:
+
+async def create_new_account(new_account: NewAccount, check_can_send_email: bool = False) -> Account:
+    if settings.SECURE_LOGIN_EMAIL and check_can_send_email:
+        if not can_send_email(new_account.login):
+            raise ValueError("Can't send email to this account")
     async with AsyncDatabase() as db:
         account = await db.scalar(select(Account).options(
             load_only(Account.id)
@@ -22,7 +29,9 @@ async def create_new_account(new_account: NewAccount) -> Account:
             protection = LoginProtection()
             db.add(protection)
         protection.login = new_account.login
-        protection.csrf_protector = None
+        protection.csrf_uuid = None
+        protection.csrf_failed_count = 0
+        protection.csrf_until_date = None
         protection.block = False
         protection.block_reason = None
         protection.otp_codes = None
@@ -32,7 +41,6 @@ async def create_new_account(new_account: NewAccount) -> Account:
         account = Account()
         account.login = new_account.login
         account.password = new_account.password
-        account.properties = new_account.properties or dict()
         account.active = new_account.active
         db.add(account)
         await db.commit()
@@ -80,7 +88,7 @@ async def unblock_account(account: Account) -> None:
 async def get_block_status(account: Account) -> Tuple[bool, Optional[str]]:
     async with AsyncDatabase() as db:
         protection = await db.scalar(select(LoginProtection).options(
-            load_only(LoginProtection.block, LoginProtection.block_reason)
+            undefer_group("block")
         ).filter_by(login=account.login).with_for_update())
         if protection is None:
             protection = LoginProtection()
@@ -92,34 +100,55 @@ async def get_block_status(account: Account) -> Tuple[bool, Optional[str]]:
         return protection.block, protection.block_reason
 
 
-async def disable_otp(account: Account):
-    async with AsyncDatabase() as db:
-        protection = await db.scalar(select(LoginProtection).options(
-            load_only(LoginProtection.login)
-        ).filter_by(login=account.login).with_for_update())
-        if protection is None:
-            protection = LoginProtection()
-            protection.login = account.login
-        protection.otp_secret = None
-        protection.otp_codes = None
-        protection.otp_codes_secret = None
-        protection.otp_codes_init = None
-        await db.commit()
-
-
-async def get_status_otp(account: Account):
-    async with AsyncDatabase() as db:
-        protection = await db.scalar(select(LoginProtection).options(
-            load_only(LoginProtection.otp_codes_init)
-        ).filter_by(login=account.login).with_for_update())
-        if protection is None:
-            protection = LoginProtection()
-            protection.login = account.login
+if settings.SECURE_OTP_ENABLED:
+    async def disable_otp(account: Account):
+        async with AsyncDatabase() as db:
+            protection = await db.scalar(select(LoginProtection).options(
+                load_only(LoginProtection.login)
+            ).filter_by(login=account.login).with_for_update())
+            if protection is None:
+                protection = LoginProtection()
+                protection.login = account.login
+            protection.otp_secret = None
+            protection.otp_codes = None
+            protection.otp_codes_secret = None
             protection.otp_codes_init = None
             await db.commit()
-        return protection.otp_codes_init is not None
 
 
-async def get_database() -> AsyncSession:
+    async def get_status_otp(account: Account):
+        async with AsyncDatabase() as db:
+            protection = await db.scalar(select(LoginProtection).options(
+                load_only(LoginProtection.otp_enabled)
+            ).filter_by(login=account.login).with_for_update())
+            if protection is None:
+                protection = LoginProtection()
+                protection.login = account.login
+                await db.commit()
+            return protection.otp_enabled
+
+
+    async def verify_otp_code(account: Account, otp_code: str) -> bool:
+        async with AsyncDatabase() as db:
+            protection = await db.scalar(
+                select(LoginProtection).options(
+                    undefer_group("otp"), undefer_group("otp_codes")
+                ).filter_by(login=account.login).with_for_update())
+            totp = TOTP(protection.otp_secret)
+            hotp = HOTP(protection.otp_codes_secret, initial_count=protection.otp_codes_init)
+            if totp.verify(otp_code):
+                return True
+            codes_md5 = list(protection.otp_codes)
+            digest = md5(otp_code.encode("UTF-8")).hexdigest()
+            i = codes_md5.index(digest)
+            if not hotp.verify(otp_code, i):
+                return False
+            codes_md5[i] = ""
+            protection.otp_codes = codes_md5
+            await db.commit()
+            return True
+
+
+async def get_database() -> AsyncGenerator[AsyncSession, Any]:
     async with AsyncDatabase() as db:
         yield db

@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     SECURE_OTP_BLOCK_TRIES: int = 3
     SECURE_OTP_ISSUER: str = "Localhost inc."
     SECURE_STRICT_VERIFICATION: bool = True
+    SECURE_LOGIN_EMAIL: bool = False
 
 
 settings = Settings()

@@ -1,6 +1,6 @@
 [project]
 name = "ConnectKit-FastAPIAuthentication"
-version = "1.6.0"
+version = "2.0.0"
 description = "User JWT Authentication for FastAPI services"
 authors = [
     { name = "RealMetamorph", email = "andr.timchuk@yandex.ru" },
@@ -13,19 +13,20 @@ classifiers = [
     "Framework :: FastAPI",
     "License :: OSI Approved :: MIT License"
 ]
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 readme = "README.md"
 license = { file = "LICENSE" }
 
 dependencies = [
-    "pydantic>=2.5.3",
-    "pydantic-settings>=2.1.0",
-    "fastapi>=0.110.0",
-    "PyJWT>=2.8.0",
+    "pydantic>=2.10.6",
+    "pydantic-settings>=2.8.1",
+    "fastapi>=0.115.11",
+    "PyJWT>=2.9.0",
     "argon2-cffi>=23.1.0",
     "pyotp>=2.9.0",
-    "ConnectKit-Database[asyncpg]>=1.3.2",
+    "ConnectKit-Database[asyncpg]>=1.3.6",
     "ietfparse>=1.9.0",
+    "email-validator>=2.2.0",
 ]
 
 [project.urls]
@@ -46,6 +47,6 @@ distribution = true
 
 [tool.pdm.dev-dependencies]
 dev = [
-    "pytest>=7.4.4",
-    "pytest-asyncio>=0.23.3",
+    "pytest>=8.3.5",
+    "pytest-asyncio>=0.25.3",
 ]

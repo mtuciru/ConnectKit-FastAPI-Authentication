@@ -8,8 +8,9 @@ import jwt
 from datetime import datetime, timedelta, timezone
 import uuid
 
+from ietfparse import headers
 from sqlalchemy import select
-from sqlalchemy.orm import load_only
+from sqlalchemy.orm import load_only, undefer_group
 
 import authentication.errors as errors
 from authentication.models import Account, AccountSession, LoginProtection
@@ -81,7 +82,8 @@ def decode_token(token: str, token_type: str, suppress: bool = False) -> Dict[st
         raise errors.token_validation_failed()
 
 
-async def _init_and_get_refresh(request: Request, response: Response, session: AccountSession, long: bool):
+async def _init_and_get_refresh(request: Request, response: Response, session: AccountSession, long: bool,
+                                db: AsyncSession):
     now = datetime.now(timezone.utc)
     identity = f"{uuid.uuid1(int(now.timestamp()))}"
     session.fingerprint = get_user_agent_info(request)
@@ -92,6 +94,7 @@ async def _init_and_get_refresh(request: Request, response: Response, session: A
     else:
         session.invalid_after = now + timedelta(hours=settings.SECURE_REFRESH_EXPIRE)
         max_age = settings.SECURE_REFRESH_EXPIRE * 3600
+    await db.flush([session])
     access_payload = {
         "role": "access",
         "session": session.id,
@@ -115,10 +118,10 @@ async def _init_and_get_refresh(request: Request, response: Response, session: A
 async def init_tokens(account: Account, long: bool, wait_otp: bool, request: Request, response: Response,
                       db: AsyncSession):
     session = AccountSession()
+    db.add(session)
     session.account_id = account.id
     session.wait_otp = wait_otp
-    refresh = await _init_and_get_refresh(request, response, session, long)
-    db.add(session)
+    refresh = await _init_and_get_refresh(request, response, session, long, db)
     await db.commit()
     return Refresh(refresh=refresh, wait_otp=wait_otp)
 
@@ -166,7 +169,7 @@ async def refresh_tokens(access: Optional[str], refresh: str, request: Request, 
         raise errors.unauthorized()
 
     protection = await db.scalar(select(LoginProtection).options(
-        load_only(LoginProtection.block, LoginProtection.block_reason)
+        undefer_group("block")
     ).filter_by(login=(await session.awaitable_attrs.account).login))
     if protection.block:
         await db.delete(session)
@@ -174,7 +177,7 @@ async def refresh_tokens(access: Optional[str], refresh: str, request: Request, 
         raise errors.invalid_credentials(protection.block_reason)
 
     long = "long" in refresh_payload and refresh_payload["long"]
-    refresh = await _init_and_get_refresh(request, response, session, long)
+    refresh = await _init_and_get_refresh(request, response, session, long, db)
     await db.commit()
     return Refresh(refresh=refresh, wait_otp=session.wait_otp)
 
@@ -203,6 +206,7 @@ async def _get_inactive_account(request: Request,
     session = await get_session(request, db)
     account = await session.awaitable_attrs.account
     account.auth_time = session.created_at.timestamp()
+    account.auth_datetime = session.created_at
     return account
 
 
@@ -214,6 +218,7 @@ async def get_account(request: Request,
     if not account.active:
         raise errors.account_not_active()
     account.auth_time = session.created_at.timestamp()
+    account.auth_datetime = session.created_at
     return account
 
 
