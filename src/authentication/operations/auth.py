@@ -1,117 +1,53 @@
-import json
-import re
-from typing import Dict, Any, Optional, List
-
-from fastapi import Request, Response, Depends
-
-import jwt
-from datetime import datetime, timedelta, timezone
 import uuid
+from hashlib import md5
+from datetime import datetime, timedelta, timezone
+from typing import Optional
 
-from ietfparse import headers
+from database.asyncio import AsyncSession
+from fastapi import Request, Response, Depends
 from sqlalchemy import select
 from sqlalchemy.orm import load_only, undefer_group
 
 import authentication.errors as errors
 from authentication.models import Account, AccountSession, LoginProtection
 from authentication.schemes import Refresh
-from authentication.utils import get_database
-from database.asyncio import AsyncSession
-from authentication.settings import settings
-
-agent_parser = re.compile(r"^([\w]*)/([\d.]*)\s*(?:\((.*?)\)\s*(.*))?$")
+from authentication.settings import settings, configuration
+from authentication.utils import (get_database, get_client_fingerprint, set_cookie, reset_cookie,
+                                  encode_session_token, decode_session_token)
 
 
-def set_cookie(access: str, response: Response, max_age: int):
-    response.set_cookie(settings.SECURE_COOKIE_NAME, access, httponly=True, samesite="lax", max_age=max_age,
-                        path=settings.SECURE_PATH,
-                        secure=settings.SECURE_ONLY)
-
-
-def get_user_agent_info(request: Request):
-    user_agent = request.headers.get("user-agent")
-    info = [get_real_client_ip(request)]
-    match = agent_parser.fullmatch(user_agent)
-    if match:
-        info += list(match.groups())
-    return "".join(json.dumps(info, ensure_ascii=False, separators=(",", ":")))
-
-
-def parse_forwarded_for(data: str) -> List[str]:
-    return list(map(lambda s: s.strip(), data.split(",")))
-
-
-def get_real_client_ip(request: Request):
-    ip = request.client[0]
-    if "X-Forwarded-For" in request.headers:
-        ips = parse_forwarded_for(request.headers["X-Forwarded-For"])
-        if ips[-1] != ip:
-            return ip
-        ip = ips[0]
-    elif "Forwarded" in request.headers:
-        parsed = headers.parse_forwarded(request.headers["Forwarded"])
-        for p in parsed:
-            if "for" in p:
-                ip = p["for"]
-                break
-    elif "X-Real-IP" in request.headers:
-        ip = request.headers["X-Real-IP"]
-    return ip
-
-
-def encode_token(payload) -> str:
-    return jwt.encode(payload, settings.SECURE_SECRET, algorithm='HS256')
-
-
-def decode_token(token: str, token_type: str, suppress: bool = False) -> Dict[str, Any]:
-    try:
-        data = jwt.decode(token, settings.SECURE_SECRET, algorithms=['HS256'],
-                          options={"require": ["exp", "role", "session", "identity"]})
-        if data["role"] != token_type:
-            raise errors.token_validation_failed()
-        return data
-    except jwt.ExpiredSignatureError:
-        if suppress:
-            data = jwt.decode(token, settings.SECURE_SECRET, algorithms=['HS256'],
-                              options={"verify_signature": False})
-            if data["role"] != token_type:
-                raise errors.token_validation_failed()
-            return data
-        raise errors.token_expired()
-    except jwt.DecodeError:
-        raise errors.token_validation_failed()
-
-
-async def _init_and_get_refresh(request: Request, response: Response, session: AccountSession, long: bool,
-                                db: AsyncSession):
+async def _update_session(request: Request, response: Response,
+                          session: AccountSession, long: bool,
+                          db: AsyncSession):
     now = datetime.now(timezone.utc)
-    identity = f"{uuid.uuid1(int(now.timestamp()))}"
-    session.fingerprint = get_user_agent_info(request)
+    identity = f"{uuid.UUID(bytes=md5(now.isoformat().encode('utf8')).digest())}"
+    session.fingerprint = get_client_fingerprint(request)
     session.identity = identity
     if long:
-        session.invalid_after = now + timedelta(hours=settings.SECURE_REFRESH_LONG_EXPIRE)
-        max_age = settings.SECURE_REFRESH_LONG_EXPIRE * 3600
+        session.invalid_after = now + timedelta(days=configuration.auth.refresh_lifetime_long)
+        max_age = configuration.auth.refresh_lifetime_long * 86_400
     else:
-        session.invalid_after = now + timedelta(hours=settings.SECURE_REFRESH_EXPIRE)
-        max_age = settings.SECURE_REFRESH_EXPIRE * 3600
+        session.invalid_after = now + timedelta(hours=configuration.auth.refresh_lifetime_short)
+        max_age = configuration.auth.refresh_lifetime_short * 3_600
     await db.flush([session])
     access_payload = {
+        "iss": configuration.auth.issuer,
         "role": "access",
-        "session": session.id,
+        "session": f"{session.id}",
         "identity": identity,
-        "exp": now + timedelta(minutes=settings.SECURE_ACCESS_EXPIRE)
+        "exp": now + timedelta(minutes=configuration.auth.access_lifetime),
     }
     refresh_payload = {
+        "iss": configuration.auth.issuer,
         "role": "refresh",
-        "session": session.id,
+        "session": f"{session.id}",
         "identity": identity,
         "long": long,
         "exp": session.invalid_after
     }
-    access = encode_token(access_payload)
-    refresh = encode_token(refresh_payload)
+    access = encode_session_token(access_payload)
+    refresh = encode_session_token(refresh_payload)
     set_cookie(access, response, max_age)
-
     return refresh
 
 
@@ -121,7 +57,7 @@ async def init_tokens(account: Account, long: bool, wait_otp: bool, request: Req
     db.add(session)
     session.account_id = account.id
     session.wait_otp = wait_otp
-    refresh = await _init_and_get_refresh(request, response, session, long, db)
+    refresh = await _update_session(request, response, session, long, db)
     await db.commit()
     return Refresh(refresh=refresh, wait_otp=wait_otp)
 
@@ -170,14 +106,14 @@ async def refresh_tokens(access: Optional[str], refresh: str, request: Request, 
 
     protection = await db.scalar(select(LoginProtection).options(
         undefer_group("block")
-    ).filter_by(login=(await session.awaitable_attrs.account).login))
+    ).filter_by(login=(await session.awaitable_attrs.account).login).with_for_update())
     if protection.block:
         await db.delete(session)
         await db.commit()
         raise errors.invalid_credentials(protection.block_reason)
 
     long = "long" in refresh_payload and refresh_payload["long"]
-    refresh = await _init_and_get_refresh(request, response, session, long, db)
+    refresh = await _update_session(request, response, session, long, db)
     await db.commit()
     return Refresh(refresh=refresh, wait_otp=session.wait_otp)
 

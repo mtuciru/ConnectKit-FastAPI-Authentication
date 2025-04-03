@@ -1,9 +1,10 @@
+import json
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
 from argon2 import PasswordHasher
 from argon2.exceptions import Argon2Error
-from sqlalchemy import TIMESTAMP, func, ForeignKey, ARRAY, String
+from sqlalchemy import TIMESTAMP, func, ForeignKey, String
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.ext.hybrid import hybrid_property, hybrid_method
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -23,12 +24,24 @@ class LoginProtection(AsyncAttrs, Base):
                                                       deferred_group="csrf")
     otp_enabled: Mapped[bool] = mapped_column(server_default="FALSE", nullable=False)
     otp_secret: Mapped[str] = mapped_column(nullable=True, deferred=True, deferred_group="otp")
-    otp_codes: Mapped[List[str]] = mapped_column(ARRAY(String, dimensions=1), nullable=True, deferred=True,
-                                                 deferred_group="otp_codes")
+    otp_codes: Mapped[str] = mapped_column(String, nullable=True, deferred=True, deferred_group="otp_codes")
     otp_codes_secret: Mapped[str] = mapped_column(nullable=True, deferred=True, deferred_group="otp_codes")
     otp_codes_init: Mapped[int] = mapped_column(nullable=True, deferred=True, deferred_group="otp_codes")
     block: Mapped[bool] = mapped_column(nullable=False, server_default="FALSE", deferred=True, deferred_group="block")
     block_reason: Mapped[str] = mapped_column(nullable=True, deferred=True, deferred_group="block")
+
+    @hybrid_property
+    def otp_codes_list(self) -> Optional[List[str]]:
+        if self.otp_codes is not None:
+            return json.loads(self.otp_codes)
+        return None
+
+    @otp_codes_list.setter
+    def otp_codes_list(self, value: Optional[List[str]]):
+        if value is not None:
+            self.otp_codes = json.dumps(value, separators=(',', ':'), indent=False, ensure_ascii=False)
+        else:
+            self.otp_codes = None
 
 
 class Account(AsyncAttrs, Base):

@@ -5,7 +5,7 @@ from pyotp import TOTP, HOTP
 from sqlalchemy import select
 from sqlalchemy.orm import load_only, undefer_group
 
-from authentication.models import Account, LoginProtection
+from authentication.models import Account, LoginProtection, AccountSession
 from authentication.schemes import NewAccount, can_send_email
 from database.asyncio import AsyncDatabase, AsyncSession
 
@@ -74,6 +74,10 @@ async def _set_block_account(account: Account, block: bool, reason: str = None) 
             db.add(protection)
         protection.block = block
         protection.block_reason = reason
+        if block:
+            sessions = await db.scalars(select(AccountSession).filter_by(account_id=account.id))
+            for session in sessions:
+                await db.delete(session)
         await db.commit()
 
 
@@ -149,6 +153,3 @@ if settings.SECURE_OTP_ENABLED:
             return True
 
 
-async def get_database() -> AsyncGenerator[AsyncSession, Any]:
-    async with AsyncDatabase() as db:
-        yield db

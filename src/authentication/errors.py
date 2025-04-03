@@ -61,4 +61,8 @@ def otp_verify_failed():
     return HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="OTP verify failed")
 
 
+def otp_not_implemented():
+    return HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="OTP feature disabled")
+
+
 auth_errors = [token_expired(), token_validation_failed(), unauthorized(), account_not_active()]

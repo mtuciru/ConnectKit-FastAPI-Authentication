@@ -1,17 +1,11 @@
 import re
 from datetime import datetime
-from typing import Optional, List, Annotated, Dict, Any
+from typing import Optional, List, Annotated
 
-from pydantic import BaseModel as PydanticBaseModel, ConfigDict, AfterValidator
+from pydantic import AfterValidator
 from email_validator import validate_email, EmailNotValidError
 
 from authentication.settings import settings
-
-
-class BaseModel(PydanticBaseModel):
-    model_config = ConfigDict(from_attributes=True,
-                              str_strip_whitespace=True)
-
 
 _login_rule = re.compile("^[a-z][-_a-z0-9]{2,31}$")
 _password_rule_space = re.compile(r"\s")

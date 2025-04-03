@@ -1,5 +1,6 @@
 import authentication.models as models
 import authentication.errors as errors
+import authentication.settings as settings
 from authentication.routes import router
 from authentication.auth import get_account, get_session, try_account
 from authentication.schemes import NewAccount, login_rules, password_rules, login_type, password_type, can_send_email
