@@ -142,11 +142,11 @@ await disable_otp(account)
 
 Authentication diagram:
 
-![Authentication diagram](https://github.com/mtuciru/ConnectKit-FastAPI-Authentication/blob/master/login.jpg?raw=true)
+![Authentication diagram](https://raw.githubusercontent.com/mtuciru/ConnectKit-FastAPI-Authentication/refs/tags/1.x.x/login.jpg)
 
 Token update diagram:
 
-![Token update diagram](https://github.com/mtuciru/ConnectKit-FastAPI-Authentication/blob/master/refresh.jpg?raw=true)
+![Token update diagram](https://raw.githubusercontent.com/mtuciru/ConnectKit-FastAPI-Authentication/refs/tags/1.x.x/refresh.jpg)
 
 ## License
 
