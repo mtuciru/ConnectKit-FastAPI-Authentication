@@ -1,11 +1,11 @@
 [project]
 name = "ConnectKit-Authentication-FastAPI"
 version = "2.0.0"
-description = "User JWT Authentication for FastAPI services"
+description = "User accounts and jwt authentication for FastAPI services"
 authors = [
     { name = "RealMetamorph", email = "andr.timchuk@yandex.ru" },
 ]
-keywords = ["connectkit", "authentication", "jwt", "cookie", "fastapi"]
+keywords = ["connectkit", "authentication", "authorization", "jwt", "header", "cookie", "fastapi"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Programming Language :: Python :: 3",
