@@ -29,7 +29,7 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://raw.githubusercontent.com/mtuciru/ConnectKit-FastAPI-Authentication/refs/tags/1.6.0/README.md"
+Homepage = "https://github.com/mtuciru/ConnectKit-FastAPI-Authentication/blob/1.6.0/README.md"
 Repository = "https://github.com/mtuciru/ConnectKit-FastAPI-Authentication.git"
 
 

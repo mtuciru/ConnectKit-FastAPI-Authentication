@@ -1,4 +1,4 @@
-# ConnectKit FastAPI Authentication [*en*|[ru](https://raw.githubusercontent.com/mtuciru/ConnectKit-FastAPI-Authentication/refs/tags/1.6.0/README_RU.md)]
+# ConnectKit FastAPI Authentication [*en*|[ru](https://github.com/mtuciru/ConnectKit-FastAPI-Authentication/blob/1.6.0/README_RU.md)]
 
 ___
 
