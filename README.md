@@ -1,8 +1,8 @@
-# ConnectKit FastAPIAuthentication [*en*|[ru](./README_RU.md)]
+# ConnectKit FastAPI Authentication [*en*|[ru](./README_RU.md)]
 
 ___
 
-ConnectKit FastAPIAuthentication adds accounts, user sessions, and
+ConnectKit FastAPI Authentication adds accounts, user sessions, and
 a user authentication mechanism using JWT for FastAPI applications.
 
 Logging in via oauth2 or OpenID connect is not supported at the moment.
@@ -142,11 +142,11 @@ await disable_otp(account)
 
 Authentication diagram:
 
-![Authentication diagram](./login.jpg)
+![Authentication diagram](https://github.com/mtuciru/ConnectKit-FastAPI-Authentication/blob/master/login.jpg?raw=true)
 
 Token update diagram:
 
-![Token update diagram](./refresh.jpg)
+![Token update diagram](https://github.com/mtuciru/ConnectKit-FastAPI-Authentication/blob/master/refresh.jpg?raw=true)
 
 ## License
 

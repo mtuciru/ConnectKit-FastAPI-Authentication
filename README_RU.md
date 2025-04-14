@@ -142,11 +142,11 @@ await disable_otp(account)
 
 Диаграмма аутентификации:
 
-![Диаграмма аутентификации](./login.jpg)
+![Диаграмма аутентификации](https://github.com/mtuciru/ConnectKit-FastAPI-Authentication/blob/master/login.jpg?raw=true)
 
 Диаграмма обновления токенов:
 
-![Диаграмма обновления токенов](./refresh.jpg)
+![Диаграмма обновления токенов](https://github.com/mtuciru/ConnectKit-FastAPI-Authentication/blob/master/refresh.jpg?raw=true)
 
 ## Лицензия
 
