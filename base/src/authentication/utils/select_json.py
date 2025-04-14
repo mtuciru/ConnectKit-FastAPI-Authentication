@@ -1,7 +1,6 @@
 from typing import Any, Callable, Optional, Union
-from authentication.extra_checks import HAS_JSON
 
-if HAS_JSON:
+try:
     from json import JSONEncoder as __JSONEncoder, JSONDecoder as __JSONDecoder
     import orjson as json
     from jwt.api_jwt import _jwt_global_obj, PyJWT as __PyJWT
@@ -9,6 +8,8 @@ if HAS_JSON:
     from jwt import DecodeError as __DecodeError
     import binascii as __binascii
     from jwt.utils import base64url_decode as __base64url_decode
+
+    USE_ORJSON = True
 
 
     def __fix_inner_json_calls():
@@ -75,7 +76,11 @@ if HAS_JSON:
     __fix_inner_json_calls()
 
 
-    def json_dumps(obj: Any, default: Optional[Callable[[Any], Any]] = None, options: Optional[int] = None) -> str:
+    def json_dumps(obj: Any, default: Optional[Callable[[Any], Any]] = None, sort_keys: bool = False) -> str:
+        if sort_keys:
+            options = json.OPT_SORT_KEYS
+        else:
+            options = None
         return json.dumps(obj, default=default, option=options)
 
 
@@ -88,11 +93,7 @@ if HAS_JSON:
             super().__init__(*args, **kwargs)
 
         def encode(self, o: Any) -> str:
-            if self.sort_keys:
-                options = json.OPT_SORT_KEYS
-            else:
-                options = None
-            return json_dumps(o, default=self.default, options=options)
+            return json_dumps(o, default=self.default, sort_keys=self.sort_keys)
 
 
     class JSONDecoder(__JSONDecoder):
@@ -103,16 +104,19 @@ if HAS_JSON:
             return json_loads(s)
 
 
-else:
+except ImportError:
     from json import JSONEncoder, JSONDecoder
     import json
 
+    USE_ORJSON = False
 
-    def json_dumps(obj: Any, default: Optional[Callable[[Any], Any]] = None, _options: Optional[int] = None) -> str:
-        return json.dumps(obj, default=default, ensure_ascii=False, allow_nan=False, indent=None, separators=(',', ':'))
+
+    def json_dumps(obj: Any, default: Optional[Callable[[Any], Any]] = None, sort_keys: bool = False) -> str:
+        return json.dumps(obj, default=default, ensure_ascii=False, sort_keys=sort_keys,
+                          allow_nan=False, indent=None, separators=(',', ':'))
 
 
     def json_loads(obj: Union[bytes, bytearray, str]) -> Any:
         return json.loads(obj)
 
-__all__ = ["json_dumps", "json_loads", "JSONEncoder", "JSONDecoder"]
+__all__ = ["USE_ORJSON", "json_dumps", "json_loads", "JSONEncoder", "JSONDecoder"]

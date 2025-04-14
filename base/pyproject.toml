@@ -5,8 +5,7 @@ description = "User JWT Authentication for FastAPI services"
 authors = [
     { name = "RealMetamorph", email = "andr.timchuk@yandex.ru" },
 ]
-keywords = ["connectkit", "authentication", "jwt", "cookie", "otp", "totp", "hotp", "fastapi",
-    "oauth2-client, oidc-client", "oauth2-provider", "oidc-provider"]
+keywords = ["connectkit", "authentication", "jwt", "cookie", "fastapi"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Programming Language :: Python :: 3",
@@ -34,24 +33,6 @@ Homepage = "https://github.com/mtuciru/ConnectKit-FastAPIAuthentication"
 Repository = "https://github.com/mtuciru/ConnectKit-FastAPIAuthentication.git"
 
 [project.optional-dependencies]
-email = [
-    "email-validator>=2.2.0",
-]
-totp = [
-    "pyotp>=2.9.0",
-]
-oauth2 = [
-    "oauthlib>=3.2.2",
-]
-phone = [
-    "phonenumbers>=9.0.1",
-]
-avatar_transform = [
-    "pillow>=11.1.0",
-]
-avatar_store = [
-    "ConnectKit-S3[async]>=1.3.2",
-]
 orjson = [
     "orjson>=3.10.15",
     "ConnectKit-Database[orjson]>=2.1.1",

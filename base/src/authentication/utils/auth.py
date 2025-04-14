@@ -11,7 +11,7 @@ from ietfparse import headers
 from pydantic import BaseModel, ConfigDict
 
 from authentication.settings import settings, configuration
-from authentication.utils.patch_json import json_dumps, JSONEncoder
+from authentication.utils.select_json import json_dumps, JSONEncoder
 
 #  ===== CONSTANTS =====
 
@@ -216,7 +216,7 @@ def reset_cookie(response: Response):
 
 
 def encode_session_token(payload) -> str:
-    return jwt.encode(payload, settings.SECURE_SECRET, algorithm='HS256', json_encoder=JSONEncoder)
+    return jwt.encode(payload, settings.SECURE_SECRET, algorithm='HS512', json_encoder=JSONEncoder)
 
 
 class TokenInvalid(ValueError):
@@ -231,7 +231,7 @@ class TokenExpired(ValueError):
 
 def decode_session_token(token: str, token_type: str, suppress: bool = False) -> Dict[str, Any]:
     try:
-        data = jwt.decode(token, settings.SECURE_SECRET, algorithms=['HS256'], options={
+        data = jwt.decode(token, settings.SECURE_SECRET, algorithms=['HS512'], options={
             "require": ["iss", "exp", "role", "session", "identity"],
             "verify_exp": not suppress
         }, issuer=configuration.auth.issuer)
