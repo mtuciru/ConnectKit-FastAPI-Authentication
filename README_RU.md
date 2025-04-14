@@ -1,4 +1,4 @@
-# ConnectKit FastAPIAuthentication [[en](./README.md)|*ru*]
+# ConnectKit FastAPIAuthentication [[en](https://raw.githubusercontent.com/mtuciru/ConnectKit-FastAPI-Authentication/refs/tags/1.6.0/README.md)|*ru*]
 
 ___
 
@@ -12,7 +12,7 @@ ConnectKit FastAPIAuthentication добавляет аккаунты, сесси
 ___
 
 ```shell
-pip install ConnectKit-FastAPIAuthentication
+pip install ConnectKit-FastAPI-Authentication
 ```
 
 ## Использование
@@ -142,11 +142,11 @@ await disable_otp(account)
 
 Диаграмма аутентификации:
 
-![Диаграмма аутентификации](https://raw.githubusercontent.com/mtuciru/ConnectKit-FastAPI-Authentication/refs/tags/1.x.x/login.jpg)
+![Диаграмма аутентификации](https://raw.githubusercontent.com/mtuciru/ConnectKit-FastAPI-Authentication/refs/tags/1.6.0/login.jpg)
 
 Диаграмма обновления токенов:
 
-![Диаграмма обновления токенов](https://raw.githubusercontent.com/mtuciru/ConnectKit-FastAPI-Authentication/refs/tags/1.x.x/refresh.jpg)
+![Диаграмма обновления токенов](https://raw.githubusercontent.com/mtuciru/ConnectKit-FastAPI-Authentication/refs/tags/1.6.0/refresh.jpg)
 
 ## Лицензия
 

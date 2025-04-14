@@ -1,4 +1,4 @@
-# ConnectKit FastAPI Authentication [*en*|[ru](./README_RU.md)]
+# ConnectKit FastAPI Authentication [*en*|[ru](https://raw.githubusercontent.com/mtuciru/ConnectKit-FastAPI-Authentication/refs/tags/1.6.0/README_RU.md)]
 
 ___
 
@@ -12,7 +12,7 @@ Logging in via oauth2 or OpenID connect is not supported at the moment.
 ___
 
 ```shell
-pip install ConnectKit-FastAPIAuthentication
+pip install ConnectKit-FastAPI-Authentication
 ```
 
 ## Usage
@@ -142,11 +142,11 @@ await disable_otp(account)
 
 Authentication diagram:
 
-![Authentication diagram](https://raw.githubusercontent.com/mtuciru/ConnectKit-FastAPI-Authentication/refs/tags/1.x.x/login.jpg)
+![Authentication diagram](https://raw.githubusercontent.com/mtuciru/ConnectKit-FastAPI-Authentication/refs/tags/1.6.0/login.jpg)
 
 Token update diagram:
 
-![Token update diagram](https://raw.githubusercontent.com/mtuciru/ConnectKit-FastAPI-Authentication/refs/tags/1.x.x/refresh.jpg)
+![Token update diagram](https://raw.githubusercontent.com/mtuciru/ConnectKit-FastAPI-Authentication/refs/tags/1.6.0/refresh.jpg)
 
 ## License
 
