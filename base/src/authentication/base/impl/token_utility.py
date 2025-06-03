@@ -5,13 +5,18 @@ from functools import lru_cache
 from typing import List, Dict, Any
 
 import jwt
-from authentication.utils import json_loads
+from ..utils import json
 from fastapi import Request, Response
+from starlette.requests import HTTPConnection
 from ietfparse import headers
 from pydantic import BaseModel, ConfigDict
 
-from authentication.settings import settings, configuration
-from authentication.utils.select_json import json_dumps, JSONEncoder
+from ..settings import settings
+
+__all__ = ["UserAgent", "UserAgentExtension", "UserAgentPlatform", "ClientInfo",
+           "get_real_client_ip", "get_client_fingerprint", "decode_client_fingerprint",
+           "set_cookie", "reset_cookie", "encode_session_token", "decode_session_token",
+           "TokenExpired", "TokenInvalid"]
 
 #  ===== CONSTANTS =====
 
@@ -167,8 +172,8 @@ def extract_ip_from_forwarded(header_list: List[str], return_no_ip: bool = False
     return target_ip if not all_ip_private else private_target_ip
 
 
-def get_real_client_ip(request: Request):
-    ip = request.client[0] if request.client is not None else None
+def get_real_client_ip(request: Request) -> str | None:
+    ip = str(request.client[0]) if request.client is not None else None
     tmp_ip: str | None = None
     headers_keys = request.headers.keys()
     if "Forwarded" in headers_keys:
@@ -182,7 +187,7 @@ def get_real_client_ip(request: Request):
     return ip
 
 
-def get_client_fingerprint(request: Request):
+def get_client_fingerprint(request: Request | HTTPConnection) -> str:
     user_agent = request.headers["User-Agent"] if "User-Agent" in request.headers else None
     info = OrderedDict()
     info["client_ip"] = get_real_client_ip(request)
@@ -190,33 +195,34 @@ def get_client_fingerprint(request: Request):
         info["user_agent"] = user_agent_parse(user_agent)
     else:
         info["user_agent"] = None
-    return json_dumps(info)
+    return json.dumps(info)
 
 
 def decode_client_fingerprint(client_fingerprint: str) -> ClientInfo:
-    return ClientInfo.model_validate(json_loads(client_fingerprint))
+    return ClientInfo.model_validate(json.loads(client_fingerprint))
 
 
 def set_cookie(access: str, response: Response, max_age: int):
-    response.set_cookie(configuration.auth.cookie_name, access,
+    response.set_cookie(settings.cookie_name, access,
                         httponly=True,
                         samesite="lax",
                         max_age=max_age,
-                        path=configuration.auth.cookie_path,
-                        secure=configuration.auth.cookie_secure)
+                        path=settings.secure_path,
+                        secure=settings.cookie_secure)
 
 
 def reset_cookie(response: Response):
-    response.set_cookie(configuration.auth.cookie_name, "Nope",
+    response.set_cookie(settings.cookie_name, "Nope",
                         httponly=True,
                         samesite="lax",
                         max_age=0,
-                        path=configuration.auth.cookie_path,
-                        secure=configuration.auth.cookie_secure)
+                        path=settings.secure_path,
+                        secure=settings.cookie_secure)
 
 
 def encode_session_token(payload) -> str:
-    return jwt.encode(payload, settings.SECURE_SECRET, algorithm='HS512', json_encoder=JSONEncoder)
+    return jwt.encode(payload, settings.secret, algorithm=settings.secret_algorithm.value,
+                      json_encoder=json.JSONEncoder)
 
 
 class TokenInvalid(ValueError):
@@ -231,12 +237,11 @@ class TokenExpired(ValueError):
 
 def decode_session_token(token: str, token_type: str, suppress: bool = False) -> Dict[str, Any]:
     try:
-        data = jwt.decode(token, settings.SECURE_SECRET, algorithms=['HS512'], options={
-            "require": ["iss", "exp", "role", "session", "identity"],
-            "verify_exp": not suppress
-        }, issuer=configuration.auth.issuer)
-        if data["role"] != token_type:
-            raise TokenInvalid()
+        data = jwt.decode(token, settings.secret, algorithms=[settings.secret_algorithm.value], options={
+            "require": ["iss", "sub", "sid", "aud", "jit", "exp"],
+            "verify_exp": not suppress,
+            "strict_aud": True
+        }, issuer=settings.issuer, audience=token_type)
         return data
     except jwt.ExpiredSignatureError:
         raise TokenExpired()

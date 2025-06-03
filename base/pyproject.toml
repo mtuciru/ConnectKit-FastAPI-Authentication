@@ -25,7 +25,9 @@ dependencies = [
     "PyJWT[crypto]>=2.10.1",
     "argon2-cffi>=23.1.0",
     "ietfparse>=1.9.0",
-    "pyyaml>=6.0.2"
+    "pyyaml>=6.0.2",
+    "filelock>=3.18.0",
+    "python-multipart>=0.0.20"
 ]
 
 [project.urls]
@@ -36,6 +38,12 @@ Repository = "https://github.com/mtuciru/ConnectKit-FastAPIAuthentication.git"
 orjson = [
     "orjson>=3.10.15",
     "ConnectKit-Database[orjson]>=2.1.1",
+]
+email = [
+    "email_validator"
+]
+phone = [
+    "phonenumbers"
 ]
 
 [build-system]
@@ -49,9 +57,11 @@ tests = "echo 'tests will be here'"
 distribution = true
 
 
-[tool.pdm.dev-dependencies]
+
+[dependency-groups]
 dev = [
     "pytest>=8.3.5",
     "pytest-asyncio>=0.25.3",
-    "ConnectKit-Database[aiosqlite]>=2.0.1"
+    "ConnectKit-Database[aiosqlite]>=2.0.1",
+    "uvicorn>=0.34.2",
 ]

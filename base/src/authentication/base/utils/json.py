@@ -1,5 +1,8 @@
 from typing import Any, Callable, Optional, Union
 
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+
 try:
     from json import JSONEncoder as __JSONEncoder, JSONDecoder as __JSONDecoder
     import orjson as json
@@ -16,14 +19,14 @@ try:
         def _encode_payload(
                 self: __PyJWT,
                 payload: dict[str, Any],
-                _headers: dict[str, Any] | None = None,
-                _json_encoder: type[json.JSONEncoder] | None = None,
+                headers: dict[str, Any] | None = None,
+                json_encoder: type[__JSONEncoder] | None = None,
         ) -> bytes:
-            return json_dumps(payload).encode("utf-8")
+            return dumps(payload).encode("utf-8")
 
         def _decode_payload(self: __PyJWT, decoded: dict[str, Any]) -> Any:
             try:
-                payload = json_loads(decoded["payload"])
+                payload = loads(decoded["payload"])
             except ValueError as e:
                 raise __DecodeError(f"Invalid payload string: {e}") from e
             if not isinstance(payload, dict):
@@ -49,7 +52,7 @@ try:
                 raise __DecodeError("Invalid header padding") from err
 
             try:
-                header = json_loads(header_data)
+                header = loads(header_data)
             except ValueError as e:
                 raise __DecodeError(f"Invalid header string: {e}") from e
 
@@ -68,15 +71,42 @@ try:
 
             return (payload, signing_input, header, signature)
 
-        _jwt_global_obj._decode_payload = _decode_payload
-        _jwt_global_obj._encode_payload = _encode_payload
-        _jws_global_obj._load = _load
+        _jwt_global_obj._decode_payload = _decode_payload.__get__(_jws_global_obj, __PyJWT)
+        _jwt_global_obj._encode_payload = _encode_payload.__get__(_jwt_global_obj, __PyJWT)
+        _jws_global_obj._load = _load.__get__(_jws_global_obj, __PyJWS)
+
+
+    def __fix_request_class():
+        async def orjson(self: Request) -> Any:
+            if not hasattr(self, "_json"):  # pragma: no branch
+                body = await self.body()
+                self._json = loads(body)
+            return self._json
+
+        Request.json = orjson
+
+
+    def __fix_json_response_class():
+        def render(self: JSONResponse, content: Any) -> bytes:
+            return dumps_bytes(content)
+
+        JSONResponse.render = render
 
 
     __fix_inner_json_calls()
+    __fix_request_class()
+    __fix_json_response_class()
 
 
-    def json_dumps(obj: Any, default: Optional[Callable[[Any], Any]] = None, sort_keys: bool = False) -> str:
+    def dumps(obj: Any, default: Optional[Callable[[Any], Any]] = None, sort_keys: bool = False) -> str:
+        if sort_keys:
+            options = json.OPT_SORT_KEYS
+        else:
+            options = None
+        return json.dumps(obj, default=default, option=options).decode("utf-8")
+
+
+    def dumps_bytes(obj: Any, default: Optional[Callable[[Any], Any]] = None, sort_keys: bool = False) -> bytes:
         if sort_keys:
             options = json.OPT_SORT_KEYS
         else:
@@ -84,7 +114,7 @@ try:
         return json.dumps(obj, default=default, option=options)
 
 
-    def json_loads(obj: Union[bytes, bytearray, memoryview, str]) -> Any:
+    def loads(obj: Union[bytes, bytearray, memoryview, str]) -> Any:
         return json.loads(obj)
 
 
@@ -93,7 +123,7 @@ try:
             super().__init__(*args, **kwargs)
 
         def encode(self, o: Any) -> str:
-            return json_dumps(o, default=self.default, sort_keys=self.sort_keys)
+            return dumps(o, default=self.default, sort_keys=self.sort_keys)
 
 
     class JSONDecoder(__JSONDecoder):
@@ -101,7 +131,7 @@ try:
             super().__init__(*args, **kwargs)
 
         def decode(self, s: Union[bytes, bytearray, memoryview, str], _w=None) -> Any:
-            return json_loads(s)
+            return loads(s)
 
 
 except ImportError:
@@ -111,12 +141,12 @@ except ImportError:
     USE_ORJSON = False
 
 
-    def json_dumps(obj: Any, default: Optional[Callable[[Any], Any]] = None, sort_keys: bool = False) -> str:
+    def dumps(obj: Any, default: Optional[Callable[[Any], Any]] = None, sort_keys: bool = False) -> str:
         return json.dumps(obj, default=default, ensure_ascii=False, sort_keys=sort_keys,
                           allow_nan=False, indent=None, separators=(',', ':'))
 
 
-    def json_loads(obj: Union[bytes, bytearray, str]) -> Any:
+    def loads(obj: Union[bytes, bytearray, str]) -> Any:
         return json.loads(obj)
 
-__all__ = ["USE_ORJSON", "json_dumps", "json_loads", "JSONEncoder", "JSONDecoder"]
+__all__ = ["USE_ORJSON", "dumps", "loads", "JSONEncoder", "JSONDecoder"]
