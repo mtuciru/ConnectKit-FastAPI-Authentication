@@ -11,7 +11,8 @@ from ..models import Account, AccountSession, AccountProtection
 from ..schemes.auth import SessionsInfo, UserInfo, NewPassword
 from ..schemes.responses import unauthorized, access_timeout, invalid_credentials, csrf_invalid
 from ..settings import settings
-from ..utils.common import get_database, responses, sleep_protection, csrf_expired, uuid_extract_time, direct_block_account
+from ..utils.common import get_database, responses, sleep_protection, csrf_expired, uuid_extract_time, \
+    direct_block_account
 from ..middleware import authenticated
 
 router = APIRouter(prefix="/account", tags=["Base account operations"])
@@ -87,7 +88,7 @@ async def get_me(
 @router.put("/password", status_code=status.HTTP_204_NO_CONTENT, responses=responses(
     unauthorized, access_timeout, csrf_invalid, invalid_credentials
 ))
-@authenticated()
+@authenticated(require_password_confirm=True)
 async def update_password(
         request: Request,
         params: NewPassword = Body(),
@@ -110,12 +111,13 @@ async def update_password(
         protection.confirm_attempt_count += 1
         await db.commit()
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="CSRF token invalid")
-    if not (await account.awaitable_attrs.verify_password(params.old_password)):
+    if not (await account.async_verify_password(params.old_password)):
         protection.confirm_uuid = None
         protection.confirm_attempt_count += 1
-        if 0 < settings.confirm_password_attempt_count <= protection.confirm_attempt_count:
+        if 0 < settings.confirm_attempt_count <= protection.confirm_attempt_count:
             await direct_block_account(protection,
-                                "The limit of change password attempts has been reached. Access to administrator", db)
+                                       "The limit of change password attempts has been reached. Access to administrator",
+                                       db)
             protection.confirm_attempt_count = 0
             await db.commit()
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=protection.block_reason)

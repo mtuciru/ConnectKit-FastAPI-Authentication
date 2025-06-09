@@ -205,7 +205,7 @@ def decode_client_fingerprint(client_fingerprint: str) -> ClientInfo:
 def set_cookie(access: str, response: Response, max_age: int):
     response.set_cookie(settings.cookie_name, access,
                         httponly=True,
-                        samesite="lax",
+                        samesite="strict",
                         max_age=max_age,
                         path=settings.secure_path,
                         secure=settings.cookie_secure)
@@ -214,7 +214,7 @@ def set_cookie(access: str, response: Response, max_age: int):
 def reset_cookie(response: Response):
     response.set_cookie(settings.cookie_name, "Nope",
                         httponly=True,
-                        samesite="lax",
+                        samesite="strict",
                         max_age=0,
                         path=settings.secure_path,
                         secure=settings.cookie_secure)

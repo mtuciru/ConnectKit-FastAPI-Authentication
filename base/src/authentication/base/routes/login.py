@@ -1,3 +1,5 @@
+from datetime import datetime, timezone, timedelta
+
 from fastapi import APIRouter, Depends, Request, Response, Body, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import undefer_group
@@ -5,14 +7,16 @@ from starlette import status
 
 from ..impl.token_utility import reset_cookie, TokenExpired, TokenInvalid
 from ..middleware import anonymous, authenticated, AnonymousCredentials
-from ..models import Account, AccountProtection
+from ..models import Account, AccountProtection, AccountSession
 
-from ..schemes.auth import LoginBy, Tokens, AccountCredentials
+from ..schemes.auth import LoginBy, Tokens, AccountCredentials, CSRFToken, ConfirmPassword
 from ..schemes.responses import (already_authenticated, csrf_invalid, invalid_credentials, account_blocked,
                                  unauthorized, access_timeout)
 from ..settings import settings
 
-from ..utils.common import get_database, responses, sleep_protection, uuid_extract_time, csrf_expired, direct_block_account
+from ..utils.common import get_database, responses, sleep_protection, uuid_extract_time, csrf_expired, \
+    direct_block_account
+from ..utils.functions import validate_confirm_csrf, count_attempts
 from ..impl.auth_utility import init_tokens, refresh_tokens
 from database.asyncio import AsyncSession
 
@@ -71,19 +75,19 @@ async def login(
     if protection.block:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=protection.block_reason)
     account = await db.scalar(select(Account).options(
-        undefer_group("sensitive")
+        undefer_group("sensitive"), undefer_group("totp")
     ).filter_by(id=protection.id))
     # Protect by CSRF
     if credentials.csrf != protection.login_uuid:
         protection.login_uuid = None
-        protection.login_attempt_count += 1
         await db.commit()
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="CSRF token invalid")
     if not account.verify_password(credentials.password):
         protection.login_uuid = None
         protection.login_attempt_count += 1
         if 0 < settings.login_attempt_count <= protection.login_attempt_count:
-            await direct_block_account(protection, "The limit of login attempts has been reached. Access to administrator", db)
+            await direct_block_account(protection,
+                                       "The limit of login attempts has been reached. Access to administrator", db)
             protection.login_attempt_count = 0
             await db.commit()
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=protection.block_reason)
@@ -119,10 +123,12 @@ async def logout(
     unauthorized, access_timeout, {419: "Session expired", 403: "Token invalid"}
 ))
 @authenticated(active_only=False)
-async def refresh_token(request: Request,
-                        response: Response,
-                        refresh: str = Body(embed=True),
-                        db: AsyncSession = Depends(get_database)):
+async def refresh_token(
+        request: Request,
+        response: Response,
+        refresh: str = Body(embed=True),
+        db: AsyncSession = Depends(get_database)
+):
     """рефреш"""
     session = request.auth.session
     db.add(session)
@@ -136,3 +142,25 @@ async def refresh_token(request: Request,
         await db.delete(session)
         await db.commit()
         raise HTTPException(status_code=403, detail="Token invalid")
+
+
+@router.post("/confirm", status_code=204, responses=responses(
+    unauthorized, access_timeout, csrf_invalid, invalid_credentials
+))
+@authenticated()
+async def confirm_password(
+        request: Request,
+        params: ConfirmPassword,
+        db: AsyncSession = Depends(get_database),
+):
+    account: Account = request.user.account
+    session: AccountSession = request.auth.session
+    await validate_confirm_csrf(account, params.confirm_csrf)
+    db.add(account)
+    if not await account.async_verify_password(params.password):
+        await count_attempts(account, session, False)
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    await count_attempts(account, session, True)
+    db.add(session)
+    session.confirmed_before = datetime.now(tz=timezone.utc) + timedelta(minutes=settings.password_confirm_lifetime)
+    await db.commit()

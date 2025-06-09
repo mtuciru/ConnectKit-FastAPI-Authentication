@@ -49,6 +49,7 @@ class SecretStore(Enum):
      * be 3000 (Unautorized) for websocket
     """
 
+
 # TODO: if SecretStore == HEADER and
 
 
@@ -94,6 +95,8 @@ class Settings(BaseSettings):
     refresh_lifetime_short: int = Field(default=24, gt=0, le=72)
     # Lifetime of inner long refresh token in days. (With "remember me" option)
     refresh_lifetime_long: int = Field(default=30, gt=0)
+    # Lifetime of password confirmation in minutes.
+    password_confirm_lifetime: int = Field(default=30, ge=5, le=1440)
     # Name of access token cookie. In header mode used for identity anon users sessions (maybe lost).
     cookie_name: str = "access"
     # Protected URL path. (Protected path, basically api of app, exclude SPA pages)
@@ -104,11 +107,13 @@ class Settings(BaseSettings):
     # Wrong password attempts before block account. If 0 protection disabled.
     login_attempt_count: int = 5
     # Wrong password attempts on protected routes before block account. If 0 protection disabled.
-    confirm_password_attempt_count: int = 0
+    confirm_attempt_count: int = 0
+    #
+    otp_attempt_count: int = 5
     # Enabled options for login (login field exists always, but can be disabled for login purposes)
     user_login_properties: list[Literal['login', 'email', 'phone']] = ['login']
     # Save user events history (update password/email/phone, success/failed login, success/failed checks, etc.)
-    user_save_history: bool = False # TODO
+    user_save_history: bool = False  # TODO
     user_history_events: list[str] = []
     # Use the scope model
     user_has_scope: bool = False

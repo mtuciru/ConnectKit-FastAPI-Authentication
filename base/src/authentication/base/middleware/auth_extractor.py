@@ -219,11 +219,9 @@ class AuthenticatedUser(IsAnonymous):
             return self._scopes
 
 
-class _OwnAuthenticationMiddleware:
-    def __init__(self, app: ASGIApp) -> None:
-        self.app = app
-
-    async def _verify(self, access_payload: dict, fingerprint: str):
+class Verify:
+    @staticmethod
+    async def verify(access_payload: dict, fingerprint: str):
         async with AsyncDatabase() as db:
             session = await db.scalar(select(AccountSession).options(
                 load_only(AccountSession.account, AccountSession.fingerprint,
@@ -238,6 +236,11 @@ class _OwnAuthenticationMiddleware:
             db.expunge(session)
             return session
 
+
+class _OwnAuthenticationMiddleware:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] not in ("http", "websocket"):  # pragma: no cover
             await self.app(scope, receive, send)
@@ -250,9 +253,8 @@ class _OwnAuthenticationMiddleware:
             return
         # credentials = None
         # user = None
-        if settings.secret_store == SecretStore.COOKIE:
-            access = connection.cookies.get(settings.cookie_name)
-        else:
+        access = connection.cookies.get(settings.cookie_name)
+        if settings.secret_store == SecretStore.HEADER:
             access = connection.headers.get("Authorization")
             # This Bearer token by our format, not oauth.
             # If oauth2/oidc plugin enabled, used the version of middlware for oauth2
@@ -267,7 +269,7 @@ class _OwnAuthenticationMiddleware:
             # try decode as session cookie
             try:
                 access_payload = decode_session_token(access, "access")
-                session = await self._verify(access_payload, get_client_fingerprint(connection))
+                session = await Verify.verify(access_payload, get_client_fingerprint(connection))
                 if session is None:
                     raise TokenInvalid
                 account = session.account

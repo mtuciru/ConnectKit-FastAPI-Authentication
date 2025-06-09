@@ -33,3 +33,6 @@ csrf_invalid = {
     403: "CSRF token invalid"
 }
 
+need_password_confirm = {
+    403: "Need password confirmation"
+}

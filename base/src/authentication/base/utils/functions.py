@@ -1,15 +1,18 @@
 from typing import Tuple, Optional
 
+from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import load_only, undefer_group
 
+from .common import csrf_expired, uuid_extract_time
 from ..models import Account, AccountProtection, AccountSession
 from ..schemes.auth import NewAccount, is_sendable_email
 from database.asyncio import AsyncDatabase
 
 from ..settings import settings
 
-__all__ = ["create_new_account", "delete_account", "block_account", "unblock_account", "get_block_status"]
+__all__ = ["create_new_account", "delete_account", "block_account", "unblock_account", "get_block_status",
+           "validate_confirm_csrf", "count_attempts"]
 
 
 async def create_new_account(new_account: NewAccount, check_can_send_email: bool = False) -> Account:
@@ -86,50 +89,35 @@ async def get_block_status(account: Account) -> Tuple[bool, Optional[str]]:
         ).filter_by(id=account.id).with_for_update())
         return protection.block, protection.block_reason
 
-# if settings.SECURE_OTP_ENABLED:
-#     async def disable_otp(account: Account):
-#         async with AsyncDatabase() as db:
-#             protection = await db.scalar(select(LoginProtection).options(
-#                 load_only(LoginProtection.login)
-#             ).filter_by(login=account.login).with_for_update())
-#             if protection is None:
-#                 protection = LoginProtection()
-#                 protection.login = account.login
-#             protection.otp_secret = None
-#             protection.otp_codes = None
-#             protection.otp_codes_secret = None
-#             protection.otp_codes_init = None
-#             await db.commit()
-#
-#
-#     async def get_status_otp(account: Account):
-#         async with AsyncDatabase() as db:
-#             protection = await db.scalar(select(LoginProtection).options(
-#                 load_only(LoginProtection.otp_enabled)
-#             ).filter_by(login=account.login).with_for_update())
-#             if protection is None:
-#                 protection = LoginProtection()
-#                 protection.login = account.login
-#                 await db.commit()
-#             return protection.otp_enabled
-#
-#
-#     async def verify_otp_code(account: Account, otp_code: str) -> bool:
-#         async with AsyncDatabase() as db:
-#             protection = await db.scalar(
-#                 select(LoginProtection).options(
-#                     undefer_group("otp"), undefer_group("otp_codes")
-#                 ).filter_by(login=account.login).with_for_update())
-#             totp = TOTP(protection.otp_secret)
-#             hotp = HOTP(protection.otp_codes_secret, initial_count=protection.otp_codes_init)
-#             if totp.verify(otp_code):
-#                 return True
-#             codes_md5 = list(protection.otp_codes)
-#             digest = md5(otp_code.encode("UTF-8")).hexdigest()
-#             i = codes_md5.index(digest)
-#             if not hotp.verify(otp_code, i):
-#                 return False
-#             codes_md5[i] = ""
-#             protection.otp_codes = codes_md5
-#             await db.commit()
-#             return True
+
+async def validate_confirm_csrf(account: Account, csrf: str):
+    async with AsyncDatabase() as db:
+        protection: AccountProtection = await db.scalar(select(AccountProtection).options(
+            undefer_group("confirm")
+        ).filter_by(id=account.id).with_for_update())
+        if protection.confirm_uuid is None:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="CSRF token invalid")
+        if csrf_expired(uuid_extract_time(protection.confirm_uuid)):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="CSRF token invalid")
+        if csrf != protection.confirm_uuid:
+            protection.confirm_uuid = None
+            await db.commit()
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="CSRF token invalid")
+
+
+async def count_attempts(account: Account, session: AccountSession, success: bool):
+    async with AsyncDatabase() as db:
+        protection: AccountProtection = await db.scalar(select(AccountProtection).options(
+            undefer_group("confirm")
+        ).filter_by(id=account.id).with_for_update())
+        if success:
+            protection.confirm_attempt_count = 0
+        else:
+            protection.confirm_attempt_count += 1
+            if 0 < settings.confirm_attempt_count <= protection.confirm_attempt_count:
+                protection.confirm_attempt_count = 0
+                db.add(session)
+                await db.delete(session)
+                await db.commit()
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Attempts limit reached")
+        await db.commit()

@@ -8,16 +8,16 @@ from sqlalchemy.orm import undefer_group
 from ..middleware import anonymous, authenticated, AnonymousCredentials
 from ..models import AccountProtection
 
-from ..schemes.auth import LoginBy, LoginCSRFData, CSRFResult
+from ..schemes.auth import LoginBy, LoginCSRFData, CSRFToken
 from ..schemes.responses import access_timeout, inactive_disallowed, already_authenticated, unauthorized
 
-from ..utils.common import get_database, responses, sleep_protection, uuid_extract_time
+from ..utils.common import get_database, responses, sleep_protection, uuid_extract_time, csrf_expired
 from database.asyncio import AsyncSession
 
 router = APIRouter(prefix="/csrf", tags=["Create csrf protection tokens"])
 
 
-@router.post("/login", response_model=CSRFResult, responses=responses(already_authenticated))
+@router.post("/login", response_model=CSRFToken, responses=responses(already_authenticated))
 @anonymous
 async def login_csrf(
         request: Request,
@@ -49,7 +49,7 @@ async def login_csrf(
             auth.session_data["token"] = token
             auth.session_data["count"] = 0
             auth.mark_session_data_dirty()
-            return CSRFResult(token=token)
+            return CSRFToken(token=token)
         else:
             count = max(0, auth.session_data.get("count", 0)) + 1
             old_date = uuid_extract_time(token) + timedelta(seconds=(1.5 * count))
@@ -62,7 +62,7 @@ async def login_csrf(
             else:
                 auth.session_data["count"] = count
             auth.mark_session_data_dirty()
-            return CSRFResult(token=token)
+            return CSRFToken(token=token)
     await sleep_protection()
     if protection.login_uuid is None:
         # Old CSRF used or not yet generated, create new
@@ -72,11 +72,13 @@ async def login_csrf(
                                   timedelta(seconds=(1.5 * (protection.login_attempt_count + 1))))
         protection.login_by = login_by.value()
         await db.commit()
-        return CSRFResult(token=token)
+        return CSRFToken(token=token)
     else:
         # Try to generate new CSRF when old exists
         if protection.login_delay > datetime.now(tz=timezone.utc):
             raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many requests")
+        if csrf_expired(protection.login_uuid):
+            protection.login_uuid = str(uuid.uuid1())
         if datetime.now(tz=timezone.utc) - protection.login_delay > timedelta(hours=1):
             # За давностью лет (Если неудачная попытка логина была давно, то счётчик попыток сбрасывается)
             protection.login_attempt_count = 0
@@ -87,10 +89,10 @@ async def login_csrf(
         await db.commit()
         # Return exists token
         # Note: In login process only one token per user exists
-        return CSRFResult(token=str(protection.login_uuid))
+        return CSRFToken(token=str(protection.login_uuid))
 
 
-@router.post("/confirm", response_model=CSRFResult, responses=responses(
+@router.post("/confirm", response_model=CSRFToken, responses=responses(
     unauthorized, inactive_disallowed, access_timeout
 ))
 @authenticated()
@@ -109,14 +111,16 @@ async def confirm_csrf(
         protection.confirm_delay = (datetime.now(tz=timezone.utc) +
                                     timedelta(seconds=(1.5 * (protection.confirm_attempt_count + 1))))
         await db.commit()
-        return CSRFResult(token=token)
+        return CSRFToken(token=token)
     else:
         if protection.confirm_delay > datetime.now(tz=timezone.utc):
             raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many requests")
+        if csrf_expired(protection.confirm_uuid):
+            protection.confirm_uuid = str(uuid.uuid1())
         if datetime.now(tz=timezone.utc) - protection.confirm_delay > timedelta(hours=1):
             # За давностью лет (Если неудачная попытка проверки была давно, то счётчик попыток сбрасывается)
             protection.confirm_attempt_count = 0
         protection.confirm_delay = (datetime.now(tz=timezone.utc) +
                                     timedelta(seconds=(1.5 * (protection.confirm_attempt_count + 1))))
         await db.commit()
-        return CSRFResult(token=str(protection.confirm_uuid))
+        return CSRFToken(token=str(protection.confirm_uuid))

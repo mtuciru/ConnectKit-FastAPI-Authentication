@@ -36,6 +36,8 @@ async def _new_session(request: Request, response: Response,
     db.add(session)
     session.account_id = account.id
     session.fingerprint = get_client_fingerprint(request)
+    session.confirmed_before = datetime.now(tz=timezone.utc) + timedelta(minutes=settings.password_confirm_lifetime)
+    session.otp_success = not account.totp
     return _update_session(response, session, long, db)
 
 

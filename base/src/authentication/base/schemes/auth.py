@@ -8,7 +8,7 @@ from pydantic_core import PydanticCustomError
 from ..settings import BaseModel, settings, SecretStore
 
 __all__ = ["Tokens", "login_type", "password_type", "guess_login_type", "combined_login_type",
-           "LoginBy", "LoginCSRFData", "CSRFResult", "AccountCredentials",
+           "LoginBy", "LoginCSRFData", "CSRFToken", "AccountCredentials",
            "SessionInfo", "SessionsInfo", "UserInfo", "NewAccount",
            "email_type", "is_sendable_email", "phone_number_rules"]
 
@@ -165,7 +165,7 @@ class LoginCSRFData(BaseModel):
         return self._login_by
 
 
-class CSRFResult(BaseModel):
+class CSRFToken(BaseModel):
     token: str
 
 
@@ -203,6 +203,11 @@ class UserInfo(BaseModel):
 class NewPassword(BaseModel):
     old_password: password_type
     new_password: password_type
+    confirm_csrf: str
+
+
+class ConfirmPassword(BaseModel):
+    password: password_type
     confirm_csrf: str
 
 
