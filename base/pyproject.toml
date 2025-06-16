@@ -5,9 +5,9 @@ description = "User accounts and jwt authentication for FastAPI services"
 authors = [
     { name = "RealMetamorph", email = "andr.timchuk@yandex.ru" },
 ]
-keywords = ["connectkit", "authentication", "authorization", "jwt", "header", "cookie", "fastapi"]
+keywords = ["connectkit", "authentication", "authorization", "jwt", "totp", "otp", "fastapi"]
 classifiers = [
-    "Development Status :: 5 - Production/Stable",
+    "Development Status :: 4 - Beta",
     "Programming Language :: Python :: 3",
     "Intended Audience :: Developers",
     "Framework :: FastAPI",

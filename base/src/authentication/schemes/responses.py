@@ -1,5 +1,5 @@
 __all__ = ["access_timeout", "already_authenticated", "inactive_disallowed", "unauthorized", "forbidden",
-           "account_blocked", "invalid_credentials"]
+           "account_blocked", "invalid_credentials", "csrf_invalid", "need_password_confirm"]
 
 access_timeout = {
     419: "Access token expired"

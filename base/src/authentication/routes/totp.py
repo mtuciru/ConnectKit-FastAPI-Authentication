@@ -1,27 +1,21 @@
-import asyncio
 import random
-import uuid
-from datetime import datetime, timedelta, timezone
 from hashlib import md5
-from typing import Optional
 
-from fastapi import APIRouter, Depends, Request, Response, Body, status, Query, HTTPException
+from fastapi import APIRouter, Depends, Request, Body, status, HTTPException
 from pyotp import HOTP, TOTP
 from sqlalchemy import select
 from sqlalchemy.orm import undefer_group, load_only
 from database.asyncio import AsyncSession
 
-from ..middleware import anonymous, authenticated, AnonymousCredentials
+from ..middleware import authenticated
 from ..models import Account, AccountProtection, AccountSession
 from ..schemes.auth import CSRFToken
 
 from ..schemes.totp import SetupOTPLink, ReserveOTPCodes, OTPCode
-from ..schemes.responses import (already_authenticated, csrf_invalid, invalid_credentials, account_blocked,
-                                 unauthorized, access_timeout)
+from ..schemes.responses import csrf_invalid, unauthorized, access_timeout
 from ..settings import settings
 
-from ..utils.common import get_database, responses, sleep_protection, uuid_extract_time, csrf_expired, \
-    direct_block_account
+from ..utils.common import get_database, responses
 from ..utils.functions import validate_confirm_csrf
 
 router = APIRouter(prefix="/otp", tags=["TOTP"])

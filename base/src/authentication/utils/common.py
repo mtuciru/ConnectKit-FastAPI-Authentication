@@ -8,7 +8,7 @@ from database.asyncio import AsyncDatabase, AsyncSession
 from fastapi import HTTPException, WebSocketException
 from sqlalchemy import select
 
-from authentication.base.models import AccountProtection, AccountSession
+from ..models import AccountProtection, AccountSession
 
 _cache = None
 

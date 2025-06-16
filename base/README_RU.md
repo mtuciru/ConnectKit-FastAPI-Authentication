@@ -7,12 +7,14 @@ ConnectKit FastAPIAuthentication добавляет аккаунты, сесси
 
 Вход через oauth2 или openid connect не поддерживается на данный момент.
 
+Пользуйтесь английской версией документации (данная устарела)
+
 ## Установка
 
 ___
 
 ```shell
-pip install ConnectKit-FastAPIAuthentication
+pip install ConnectKit-Authentication-FastAPI
 ```
 
 ## Использование

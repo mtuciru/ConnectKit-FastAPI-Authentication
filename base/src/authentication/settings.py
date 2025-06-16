@@ -29,11 +29,9 @@ class SecretStore(Enum):
     Access token stored in cookie
     Refresh token returned from login and refresh methods    
     
-    If enabled oauth2/oidc plugin header 'Authorization' also supported for access by oauth2/oidc apps 
     
     If access token expired, return code can:
-     * be 419 for http and cookie token
-     * be 401 with WWW-Authenticate header with error for http and Authorization header
+     * be 419 for http
      * be 3000 (Unautorized) for websocket
     """
     HEADER = "header"
@@ -41,15 +39,11 @@ class SecretStore(Enum):
     Access token returned to client and expected in header 'Authorization'
     Refresh token returned from login and refresh methods
     
-    If enabled oauth2/oidc plugin header 'Authorization' also supported for access by oauth2/oidc apps
     
     If access token expired, return code can:
-     * be 401 with WWW-Authenticate header with error for http
+     * be 419 for http
      * be 3000 (Unautorized) for websocket
     """
-
-
-# TODO: if SecretStore == HEADER and
 
 
 class Settings(BaseSettings):

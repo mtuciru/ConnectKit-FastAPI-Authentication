@@ -12,7 +12,7 @@ Logging in via oauth2 or OpenID connect is not supported at the moment.
 ___
 
 ```shell
-pip install ConnectKit-FastAPIAuthentication
+pip install ConnectKit-Authentication-FastAPI
 ```
 
 ## Usage
@@ -21,124 +21,217 @@ ___
 
 Configuration parameters are loaded from environment variables, and can be redefined later.
 
-    SECURE_SECRET=str                 # Key for signing JWT
-    SECURE_ACCESS_EXPIRE=5            # Access token validity period in minutes
-    SECURE_REFRESH_EXPIRE=24          # Refresh token validity time in hours for a short session
-    SECURE_REFRESH_LONG_EXPIRE=720    # Refresh token validity time in hours for a long session
-    SECURE_PATH=/api                  # Prefix of the path to which the cookie with the token will be bound
-    SECURE_COOKIE_NAME=access         # The name of the cookie in which the token will be
-    SECURE_ONLY=True                  # Instructing the browser to accept the token only if https
-    SECURE_BLOCK_TRIES=5              # Number of attempts to enter the wrong password before the account is blocked
-    SECURE_OTP_ENABLED=True           # Use 2FA via one-time passwords
-    SECURE_OTP_BLOCK_TRIES=3          # Number of attempts to transfer OTP before logout
-    SECURE_OTP_ISSUER=Localhost inc.  # The OTP ISSUER transmitted to user when 2FA is enabled
-    SECURE_STRICT_VERIFICATION=True   # Strict verification for re-entering the password
+    secret: str | None = None
+    """
+    Secret for signing access/refresh tokens.
+    
+    Used for signing access/refresh user tokens, if None, random token will be generated on init module.
+    
+    Default: None
+    """
+    secret_algorithm: SecretAlgorithm = SecretAlgorithm.HS256
+    """
+    Algorithm used for signing access/refresh tokens.
+    
+    Available algorithms: HS256, HS512.
+    
+    Default: HS256
+    """
+    secret_store: SecretStore = SecretStore.COOKIE
+    # Issuer for inner tokens and otp installer
+    issuer: str = "Localhost inc."
+    # Lifetime of inner access token in minutes. Must be smaller
+    access_lifetime: int = Field(default=5, gt=0, le=30)
+    # Lifetime of inner short refresh token in hours. (Without "remember me" option)
+    refresh_lifetime_short: int = Field(default=24, gt=0, le=72)
+    # Lifetime of inner long refresh token in days. (With "remember me" option)
+    refresh_lifetime_long: int = Field(default=30, gt=0)
+    # Lifetime of password confirmation in minutes.
+    password_confirm_lifetime: int = Field(default=30, ge=5, le=1440)
+    # Name of access token cookie. In header mode used for identity anon users sessions (maybe lost).
+    cookie_name: str = "access"
+    # Protected URL path. (Protected path, basically api of app, exclude SPA pages)
+    # Note: cookie also bind for this path on top-level domain by browser
+    secure_path: str = "/api"
+    # Set up cookie only on https (TLS protected connection)
+    cookie_secure: bool = True
+    # Wrong password attempts before block account. If 0 protection disabled.
+    login_attempt_count: int = 5
+    # Wrong password attempts on protected routes before block account. If 0 protection disabled.
+    confirm_attempt_count: int = 0
+    #
+    otp_attempt_count: int = 5
+    # Enabled options for login (login field exists always, but can be disabled for login purposes)
+    user_login_properties: list[Literal['login', 'email', 'phone']] = ['login']
+    # Save user events history (update password/email/phone, success/failed login, success/failed checks, etc.)
+    user_save_history: bool = False  # TODO
+    user_history_events: list[str] = []
+    # Use the scope model
+    user_has_scope: bool = False
 
-To redefine:
-
-```python
-from authentication.settings import settings
-
-settings.SECURE_COOKIE_NAME = "new_name"
-```
+Settings loaded from `.env` in pwd or from `environ` and can't be redefined later.
 
 [To set up a database connection](https://github.com/mtuciru/ConnectKit-Database/blob/master/README.md).
 
-To enable authorization endpoints:
+To enable authorization endpoints and middleware:
 
 ```python
 from fastapi import FastAPI
-from authentication import router as auth_router
+from authentication import setup_app
 
 app = FastAPI()
-app.include_router(auth_router, prefix="/api/auth")
+setup_app(app)
 
 ```
 
-To get the current account or session:
+To require auth or anon use decorators:
 
 ```python
-from fastapi import APIRouter, Depends
-from authentication import get_account, get_session
+from fastapi import APIRouter, Request
+from authentication import (anonymous, authenticated, any_scopes, all_scopes,
+                            AnonymousCredentials, AnonymousUser,
+                            AuthenticatedCredentials, AuthenticatedUser)
+from authentication import responses, common
 from authentication.models import Account, AccountSession
-from authentication.errors import auth_errors, with_errors
 
 router = APIRouter()
 
 
-@router.get("/test", responses=with_errors(*auth_errors))
-async def test(account: Account = Depends(get_account)):
-    print(account)
+@router.get("/test", responses=common.responses(
+    responses.unauthorized, responses.access_timeout
+))
+@authenticated()
+async def test(request: Request):
+    assert request.auth.is_authenticated
+    assert request.user.is_authenticated
+    creds: AuthenticatedCredentials = request.auth
+    user: AuthenticatedUser = request.user
 
 
-@router.get("/test2", responses=with_errors(*auth_errors))
-async def test2(account_session: AccountSession = Depends(get_session)):
-    print(account_session)
+@router.get("/test2", responses=common.responses(
+    responses.already_authenticated
+))
+@anonymous
+async def test2(request: Request):
+    assert request.auth.is_anonymous
+    assert request.user.is_anonymous
+    creds: AnonymousCredentials = request.auth
+    user: AnonymousUser = request.user
+
+
+@router.get("/test3", responses=common.responses(
+    responses.already_authenticated
+))
+async def test3(request: Request):
+    try:
+        a = request.auth.is_anonymous
+        b = request.user.is_anonymous
+    except Exception:
+        # Exception("Trying use authenticate for unsecured path. (Check settings of module)")
+        pass
 
 ```
 
-The `get_session` function checks for the presence of a session and the passage of 2FA.
+The `anonymous` function decorator checks for anonymous user.
 
-The `get_account` function checks the same as `get_session`, as well as the account activation status.
+The `authenticated` function decorator checks for authenticated user.
 
-If the login is not completed or outdated, HttpException will be raised from the list of `auth_errors` exceptions.
+The `any_scopes` function decorator checks for authenticated user with any subset of required scopes
+(if scopes enabled in settings).
+
+The `all_scopes` function decorator checks for authenticated user with all the required scopes
+(if scopes enabled in settings).
+
 
 To implement the registration form, manually add users and administrative work:
 
-```python
-from authentication import (NewAccount, login_rules, password_rules,
-                            login_type, password_type,
-                            create_new_account, delete_account,
-                            block_account, unblock_account, get_block_status,
-                            get_status_otp, disable_otp)
-from pydantic import BaseModel, EmailStr
+[//]: # (```python)
 
-# Creating a new user
+[//]: # (from authentication import &#40;NewAccount, login_rules, password_rules,)
 
-try:
-    new_acc = NewAccount(
-        login="root",  # The user's unique login is set by the login_rules rule
-        password="password",  # The user's password is set by the password_rules rule
-        properties={  # User properties required in a specific task, Dict[str, Any]
-            "name": "name"
-        },
-        active=True  # Is the account activated, False by default
-    )
-    account = await create_new_account(new_acc)
-except ValueError as e:
-    # The user already exists, or there is a validation error in the New Account
-    pass
+[//]: # (                            login_type, password_type,)
 
+[//]: # (                            create_new_account, delete_account,)
 
-# Example of a registration scheme
+[//]: # (                            block_account, unblock_account, get_block_status,)
 
-class UserRegistration(BaseModel):
-    login: login_type
-    nickname: str
-    email: EmailStr
-    password: password_type
+[//]: # (                            get_status_otp, disable_otp&#41;)
 
+[//]: # (from pydantic import BaseModel, EmailStr)
 
-# Deleting an account
-await delete_account(account)
+[//]: # ()
+[//]: # (# Creating a new user)
 
-# Getting the blocking status (bool, Optional[str])
-block, reason = await get_block_status(account)
+[//]: # ()
+[//]: # (try:)
 
-# Getting 2FA status
-otp_enabled = await get_status_otp(account)
+[//]: # (    new_acc = NewAccount&#40;)
 
-# Account blocking (a blocked account cannot log in)
-await block_account(account, "reason")
+[//]: # (        login="root",  # The user's unique login is set by the login_rules rule)
 
-# Unblocking account
-await unblock_account(account)
+[//]: # (        password="password",  # The user's password is set by the password_rules rule)
 
-# Forced disable of 2FA
-await disable_otp(account)
+[//]: # (        active=True  # Is the account activated, False by default)
 
+[//]: # (    &#41;)
 
-```
+[//]: # (    account = await create_new_account&#40;new_acc&#41;)
+
+[//]: # (except ValueError as e:)
+
+[//]: # (    # The user already exists, or there is a validation error in the New Account)
+
+[//]: # (    pass)
+
+[//]: # ()
+[//]: # ()
+[//]: # (# Example of a registration scheme)
+
+[//]: # ()
+[//]: # (class UserRegistration&#40;BaseModel&#41;:)
+
+[//]: # (    login: login_type)
+
+[//]: # (    nickname: str)
+
+[//]: # (    email: EmailStr)
+
+[//]: # (    password: password_type)
+
+[//]: # ()
+[//]: # ()
+[//]: # (# Deleting an account)
+
+[//]: # (await delete_account&#40;account&#41;)
+
+[//]: # ()
+[//]: # (# Getting the blocking status &#40;bool, Optional[str]&#41;)
+
+[//]: # (block, reason = await get_block_status&#40;account&#41;)
+
+[//]: # ()
+[//]: # (# Getting 2FA status)
+
+[//]: # (otp_enabled = await get_status_otp&#40;account&#41;)
+
+[//]: # ()
+[//]: # (# Account blocking &#40;a blocked account cannot log in&#41;)
+
+[//]: # (await block_account&#40;account, "reason"&#41;)
+
+[//]: # ()
+[//]: # (# Unblocking account)
+
+[//]: # (await unblock_account&#40;account&#41;)
+
+[//]: # ()
+[//]: # (# Forced disable of 2FA)
+
+[//]: # (await disable_otp&#40;account&#41;)
+
+[//]: # ()
+[//]: # ()
+[//]: # (```)
 
 Authentication diagram:
 
