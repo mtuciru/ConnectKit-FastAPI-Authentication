@@ -25,10 +25,10 @@ dependencies = [
     "PyJWT[crypto]>=2.10.1",
     "argon2-cffi>=23.1.0",
     "ietfparse>=1.9.0",
-    "pyyaml>=6.0.2",
     "filelock>=3.18.0",
-    "python-multipart>=0.0.20",
-    "pyotp>=2.9.0"
+    "pyotp>=2.9.0",
+    "oauthlib>=3.2.2",
+    "aiohttp>=3.12.12"
 ]
 
 [project.urls]

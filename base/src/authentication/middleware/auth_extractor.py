@@ -237,7 +237,7 @@ class Verify:
             return session
 
 
-class _OwnAuthenticationMiddleware:
+class AuthenticationMiddleware:
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
@@ -257,8 +257,6 @@ class _OwnAuthenticationMiddleware:
         if settings.secret_store == SecretStore.HEADER:
             access = connection.headers.get("Authorization")
             # This Bearer token by our format, not oauth.
-            # If oauth2/oidc plugin enabled, used the version of middlware for oauth2
-            # (inner tokens format also changed to oauth2)
             if access is not None:
                 access = access.removeprefix("Bearer ")
         if access is None:
@@ -305,10 +303,6 @@ class _OwnAuthenticationMiddleware:
             await self.app(scope, receive, send_wrapper)
         else:
             await self.app(scope, receive, send)
-
-
-# TODO: if oauth2/oidc plugin enabled use other version of middleware
-AuthenticationMiddleware = _OwnAuthenticationMiddleware
 
 
 class AuthenticationScheme(SecurityBase):

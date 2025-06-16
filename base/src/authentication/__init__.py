@@ -1,8 +1,13 @@
-# TODO: Add plugin dynamic imports
-from . import plugin_checks
-from . import base
+from fastapi import FastAPI
 
-__all__ = ["base"]
+from .settings import settings
+from .routes import router
+from .middleware import *
+from .utils import *
+from .schemes import responses
+from . import models
 
-if plugin_checks.HAS_TOTP:
-    __all__.append("totp")
+
+def setup_app(app: FastAPI):
+    app.add_middleware(AuthenticationMiddleware)
+    app.include_router(router, prefix=settings.secure_path)

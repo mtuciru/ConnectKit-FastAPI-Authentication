@@ -4,7 +4,9 @@ import os
 
 from fastapi.openapi.utils import get_openapi
 from fastapi.security import HTTPBearer
-
+from sqlalchemy.ext.asyncio import AsyncAttrs
+from sqlalchemy.ext.hybrid import  hybrid_method
+from sqlalchemy.orm import mapped_column, Mapped
 
 os.environ["DB_ADAPTER"] = "sqlite"
 os.environ["DB_NAME"] = ":memory:"
@@ -22,3 +24,5 @@ setup_app(app)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
+

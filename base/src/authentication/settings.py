@@ -3,7 +3,6 @@ from typing import Literal
 
 from pydantic import BaseModel as BaseModelPydantic, ConfigDict, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from ..plugin_checks import *
 
 __all__ = ["settings", "Settings", "BaseModel", "BaseModelDB", "SecretStore"]
 

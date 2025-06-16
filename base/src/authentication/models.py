@@ -222,3 +222,20 @@ if settings.user_save_history:
 else:
     class AccountHistory:
         pass
+
+
+class OAuthChallenge(AsyncAttrs, Base):
+    __tablename__ = "oauth_challenge"
+    state: Mapped[str] = mapped_column(primary_key=True)
+    provider_name: Mapped[str] = mapped_column(nullable=False)
+    code_verifier: Mapped[str] = mapped_column(nullable=False)
+
+
+class OAuthUserMap(AsyncAttrs, Base):
+    __tablename__ = "oauth_user_map"
+    id: Mapped[int] = mapped_column(ForeignKey("account.id"), primary_key=True)
+    provider_name: Mapped[str] = mapped_column(nullable=False, index=True)
+    username: Mapped[str] = mapped_column(nullable=False, index=True)
+    bind_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False,
+                                                 deferred=True, deferred_group="bind_at",
+                                                 server_default=func.current_timestamp())
