@@ -7,6 +7,8 @@ a user authentication mechanism using JWT for FastAPI applications.
 
 Logging in via oauth2 or OpenID connect is not supported at the moment.
 
+Not fully tested version
+
 ## Installation
 
 ___

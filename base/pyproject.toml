@@ -32,8 +32,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/mtuciru/ConnectKit-FastAPIAuthentication"
-Repository = "https://github.com/mtuciru/ConnectKit-FastAPIAuthentication.git"
+Homepage = "https://github.com/mtuciru/ConnectKit-FastAPI-Authentication/tree/wo_oauth"
+Repository = "https://github.com/mtuciru/ConnectKit-FastAPI-Authentication.git"
 
 [project.optional-dependencies]
 orjson = [
