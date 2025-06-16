@@ -1,5 +1,5 @@
 [project]
-name = "ConnectKit-Authentication-FastAPI"
+name = "ConnectKit-FastAPI-Authentication"
 version = "2.0.0"
 description = "User accounts and jwt authentication for FastAPI services"
 authors = [
