@@ -7,12 +7,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import undefer_group, load_only
 from database.asyncio import AsyncSession
 
-from ..middleware import any_scopes
+from ..middleware import has_any_user_scope, authenticated
 from ..models import Account, AccountProtection, AccountSession
 from ..schemes.auth import CSRFToken
 
 from ..schemes.totp import SetupOTPLink, ReserveOTPCodes, OTPCode
-from ..schemes.responses import csrf_invalid, unauthorized, access_timeout
+from ..schemes.responses import csrf_invalid, unauthorized, access_timeout, forbidden
 from ..settings import settings
 
 from ..utils.common import get_database, responses
@@ -29,14 +29,16 @@ def get_secret():
 
 
 @router.post("/setup_init", response_model=SetupOTPLink, responses=responses(
-    unauthorized, access_timeout, csrf_invalid, {400: "TOTP setup already initiated"}
+    unauthorized, access_timeout, csrf_invalid, forbidden, {400: "TOTP setup already initiated"}
 ))
-@any_scopes(["user"], active_only=False, require_password_confirm=True)
+@authenticated(active_only=False, require_password_confirm=True)
 async def otp_setup_init(
         request: Request,
         csrf: CSRFToken = Body(),
         db: AsyncSession = Depends(get_database)
 ):
+    if not has_any_user_scope(request, ["user"]):
+        raise HTTPException(status_code=403, detail="Forbidden")
     account: Account = request.user.account
     await validate_confirm_csrf(account, csrf.token)
     protection = await db.scalar(select(AccountProtection).options(
@@ -53,17 +55,19 @@ async def otp_setup_init(
 
 
 @router.post("/setup_complete", response_model=ReserveOTPCodes, responses=responses(
-    unauthorized, access_timeout,
+    unauthorized, access_timeout, forbidden,
     {400: "TOTP setup already completed"},
     {400: "TOTP setup not started"},
     {400: "TOTP setup validation failed"}
 ))
-@any_scopes(["user"])
+@authenticated()
 async def otp_setup_verify(
         request: Request,
         params: OTPCode,
         db: AsyncSession = Depends(get_database)
 ):
+    if not has_any_user_scope(request, ["user"]):
+        raise HTTPException(status_code=403, detail="Forbidden")
     account: Account = request.user.account
     db.add(account)
     protection = await db.scalar(select(AccountProtection).options(
@@ -92,15 +96,17 @@ async def otp_setup_verify(
 
 
 @router.post("/setup_abort", status_code=status.HTTP_204_NO_CONTENT, responses=responses(
-    unauthorized, access_timeout,
+    unauthorized, access_timeout, forbidden,
     {400: "TOTP setup not started"},
     {400: "TOTP setup validation failed"}
 ))
-@any_scopes(["user"])
+@authenticated()
 async def otp_setup_abort(
         request: Request,
         db: AsyncSession = Depends(get_database)
 ):
+    if not has_any_user_scope(request, ["user"]):
+        raise HTTPException(status_code=403, detail="Forbidden")
     account: Account = request.user.account
     db.add(account)
     protection: AccountProtection = await db.scalar(select(AccountProtection).options(
@@ -116,15 +122,17 @@ async def otp_setup_abort(
 
 
 @router.post("/gen_reserve_codes", response_model=ReserveOTPCodes, responses=responses(
-    unauthorized, access_timeout, csrf_invalid,
+    unauthorized, access_timeout, csrf_invalid, forbidden,
     {400: "TOTP not enabled"},
 ))
-@any_scopes(["user"], require_password_confirm=True)
+@authenticated(require_password_confirm=True)
 async def otp_update_codes(
         request: Request,
         csrf: CSRFToken = Body(),
         db: AsyncSession = Depends(get_database)
 ):
+    if not has_any_user_scope(request, ["user"]):
+        raise HTTPException(status_code=403, detail="Forbidden")
     account: Account = request.user.account
     await validate_confirm_csrf(account, csrf.token)
     protection: AccountProtection = await db.scalar(select(AccountProtection).options(
@@ -147,14 +155,16 @@ async def otp_update_codes(
 
 
 @router.post("/disable", status_code=status.HTTP_204_NO_CONTENT, responses=responses(
-    unauthorized, access_timeout, csrf_invalid
+    unauthorized, access_timeout, csrf_invalid, forbidden
 ))
-@any_scopes(["user"], require_password_confirm=True)
+@authenticated(require_password_confirm=True)
 async def otp_disable(
         request: Request,
         csrf: CSRFToken = Body(),
         db: AsyncSession = Depends(get_database)
 ):
+    if not has_any_user_scope(request, ["user"]):
+        raise HTTPException(status_code=403, detail="Forbidden")
     account: Account = request.user.account
     await validate_confirm_csrf(account, csrf.token)
     db.add(account)
@@ -170,14 +180,16 @@ async def otp_disable(
 
 
 @router.post("/verify", status_code=status.HTTP_204_NO_CONTENT, responses=responses(
-    unauthorized, access_timeout, {403: "Wrong code"}
+    unauthorized, access_timeout, forbidden, {403: "OTP verification failed"}
 ))
-@any_scopes(["user"], active_only=False)
+@authenticated(active_only=False)
 async def otp_verify(
         request: Request,
         otp_code: OTPCode,
         db: AsyncSession = Depends(get_database)
 ):
+    if not has_any_user_scope(request, ["user"]):
+        raise HTTPException(status_code=403, detail="Forbidden")
     account: Account = request.user.account
     session: AccountSession = request.auth.session
     if session.otp_success:

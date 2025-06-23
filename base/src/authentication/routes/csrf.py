@@ -5,11 +5,11 @@ from fastapi import APIRouter, Depends, Request, status, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import undefer_group
 
-from ..middleware import anonymous, any_scopes, AnonymousCredentials
+from ..middleware import anonymous, authenticated, has_any_user_scope, AnonymousCredentials
 from ..models import AccountProtection
 
 from ..schemes.auth import LoginBy, LoginCSRFData, CSRFToken
-from ..schemes.responses import access_timeout, inactive_disallowed, already_authenticated, unauthorized
+from ..schemes.responses import access_timeout, inactive_disallowed, already_authenticated, unauthorized, forbidden
 
 from ..utils.common import get_database, responses, sleep_protection, uuid_extract_time, csrf_expired
 from database.asyncio import AsyncSession
@@ -93,13 +93,15 @@ async def login_csrf(
 
 
 @router.post("/confirm", response_model=CSRFToken, responses=responses(
-    unauthorized, inactive_disallowed, access_timeout
+    unauthorized, inactive_disallowed, access_timeout, forbidden
 ))
-@any_scopes(["user"])
+@authenticated()
 async def confirm_csrf(
         request: Request,
         db: AsyncSession = Depends(get_database)
 ):
+    if not has_any_user_scope(request, ["user"]):
+        raise HTTPException(status_code=403, detail="Forbidden")
     await sleep_protection()
     protection: AccountProtection = await db.scalar(select(AccountProtection).options(
         undefer_group("confirm")

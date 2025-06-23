@@ -7,12 +7,12 @@ from starlette import status
 
 from ..impl import BlockedAccount
 from ..impl.token_utility import reset_cookie, TokenExpired, TokenInvalid
-from ..middleware import anonymous, any_scopes, AnonymousCredentials
+from ..middleware import anonymous, authenticated, has_any_user_scope, AnonymousCredentials
 from ..models import Account, AccountProtection, AccountSession
 
 from ..schemes.auth import LoginBy, Tokens, AccountCredentials, ConfirmPassword
 from ..schemes.responses import (already_authenticated, csrf_invalid, invalid_credentials, account_blocked,
-                                 unauthorized, access_timeout)
+                                 unauthorized, access_timeout, forbidden)
 from ..settings import settings
 
 from ..utils.common import get_database, responses, sleep_protection, uuid_extract_time, csrf_expired, \
@@ -103,15 +103,17 @@ async def login(
 
 
 @router.post("/logout", response_model=Tokens, responses=responses(
-    unauthorized, access_timeout
+    unauthorized, access_timeout, forbidden
 ))
-@any_scopes(["user"], active_only=False)
+@authenticated(active_only=False)
 async def logout(
         request: Request,
         response: Response,
         db: AsyncSession = Depends(get_database)
 ):
     """Логаут"""
+    if not has_any_user_scope(request, ["user"]):
+        raise HTTPException(status_code=403, detail="Forbidden")
     session = request.auth.session
     db.add(session)
     await db.refresh(session)
@@ -121,9 +123,9 @@ async def logout(
 
 
 @router.post("/refresh", response_model=Tokens, responses=responses(
-    unauthorized, access_timeout, {419: "Session expired", 403: "Token invalid"}
+    unauthorized, access_timeout, forbidden, {419: "Session expired", 403: "Token invalid"}
 ))
-@any_scopes(["user"], active_only=False)
+@authenticated(active_only=False)
 async def refresh_token(
         request: Request,
         response: Response,
@@ -131,6 +133,8 @@ async def refresh_token(
         db: AsyncSession = Depends(get_database)
 ):
     """рефреш"""
+    if not has_any_user_scope(request, ["user"]):
+        raise HTTPException(status_code=403, detail="Forbidden")
     session = request.auth.session
     db.add(session)
     try:
@@ -146,14 +150,16 @@ async def refresh_token(
 
 
 @router.post("/confirm", status_code=204, responses=responses(
-    unauthorized, access_timeout, csrf_invalid, invalid_credentials
+    unauthorized, access_timeout, csrf_invalid, invalid_credentials, forbidden
 ))
-@any_scopes(["user"])
+@authenticated()
 async def confirm_password(
         request: Request,
         params: ConfirmPassword,
         db: AsyncSession = Depends(get_database),
 ):
+    if not has_any_user_scope(request, ["user"]):
+        raise HTTPException(status_code=403, detail="Forbidden")
     account: Account = request.user.account
     session: AccountSession = request.auth.session
     await validate_confirm_csrf(account, params.confirm_csrf)

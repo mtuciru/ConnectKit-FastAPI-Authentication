@@ -38,7 +38,7 @@ class Account(AsyncAttrs, Base):
     # Активация аккаунта. Не активированный аккаунт может залогиниться, но не может взаимодействовать с системой за рамками запроса информации о себе.
     active: Mapped[bool] = mapped_column(nullable=False, server_default="FALSE")
     totp: Mapped[bool] = mapped_column(nullable=False, server_default="FALSE", deferred=True, deferred_group="totp")
-    _scopes: Mapped[str] = mapped_column(nullable=False, server_default="[]")
+    _scopes: Mapped[str] = mapped_column("scopes", nullable=False, server_default="[]")
     # Дата создания аккаунта
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False,
                                                  server_default=func.current_timestamp(),
