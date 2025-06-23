@@ -1,5 +1,5 @@
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 import os
 
 from fastapi.openapi.utils import get_openapi
@@ -11,7 +11,7 @@ from sqlalchemy.orm import mapped_column, Mapped
 os.environ["DB_ADAPTER"] = "sqlite"
 os.environ["DB_NAME"] = ":memory:"
 
-from authentication.base import setup_app
+from authentication import setup_app
 from database import async_init_default_base, Base
 
 

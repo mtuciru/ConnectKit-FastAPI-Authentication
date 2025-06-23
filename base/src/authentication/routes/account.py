@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from typing import Optional
 
+from authentication.utils.functions import validate_confirm_csrf, count_attempts
 from fastapi import APIRouter, Depends, Request, Response, Body, status, Query, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import load_only, undefer_group
@@ -13,7 +14,7 @@ from ..schemes.responses import unauthorized, access_timeout, invalid_credential
 from ..settings import settings
 from ..utils.common import get_database, responses, sleep_protection, csrf_expired, uuid_extract_time, \
     direct_block_account
-from ..middleware import authenticated
+from ..middleware import any_scopes
 
 router = APIRouter(prefix="/account", tags=["Base account operations"])
 
@@ -21,7 +22,7 @@ router = APIRouter(prefix="/account", tags=["Base account operations"])
 @router.get("/sessions", response_model=SessionsInfo, responses=responses(
     unauthorized, access_timeout
 ))
-@authenticated(active_only=False)
+@any_scopes(["user"], active_only=False)
 async def account_sessions(
         request: Request,
         db: AsyncSession = Depends(get_database)
@@ -43,7 +44,7 @@ async def account_sessions(
 @router.delete("/session", status_code=status.HTTP_204_NO_CONTENT, responses=responses(
     unauthorized, access_timeout
 ))
-@authenticated(active_only=False)
+@any_scopes(["user"], active_only=False)
 async def close_account_session(
         request: Request,
         response: Response,
@@ -68,7 +69,7 @@ async def close_account_session(
 @router.get("/", response_model=UserInfo, responses=responses(
     unauthorized, access_timeout
 ))
-@authenticated(active_only=False)
+@any_scopes(["user"], active_only=False)
 async def get_me(
         request: Request,
         db: AsyncSession = Depends(get_database)
@@ -88,7 +89,7 @@ async def get_me(
 @router.put("/password", status_code=status.HTTP_204_NO_CONTENT, responses=responses(
     unauthorized, access_timeout, csrf_invalid, invalid_credentials
 ))
-@authenticated(require_password_confirm=True)
+@any_scopes(["user"], active_only=False, require_password_confirm=True)
 async def update_password(
         request: Request,
         params: NewPassword = Body(),
@@ -97,32 +98,12 @@ async def update_password(
     await sleep_protection()
     account: Account = request.user.account
     session: AccountSession = request.auth.session
+    await validate_confirm_csrf(account, params.confirm_csrf)
+    if not await account.async_verify_password(params.old_password):
+        await count_attempts(account, session, False)
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    await count_attempts(account, session, True)
     db.add(account)
-    db.add(session)
-    protection: AccountProtection = await db.scalar(select(AccountProtection).options(
-        undefer_group("confirm"), undefer_group("block")
-    ).filter_by(login=account.login).with_for_update())
-    if protection.confirm_uuid is None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="CSRF token invalid")
-    if csrf_expired(uuid_extract_time(protection.confirm_uuid)):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="CSRF token invalid")
-    if params.csrf != protection.confirm_uuid:
-        protection.confirm_uuid = None
-        protection.confirm_attempt_count += 1
-        await db.commit()
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="CSRF token invalid")
-    if not (await account.async_verify_password(params.old_password)):
-        protection.confirm_uuid = None
-        protection.confirm_attempt_count += 1
-        if 0 < settings.confirm_attempt_count <= protection.confirm_attempt_count:
-            await direct_block_account(protection,
-                                       "The limit of change password attempts has been reached. Access to administrator",
-                                       db)
-            protection.confirm_attempt_count = 0
-            await db.commit()
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=protection.block_reason)
-        await db.commit()
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Verification failed")
     account.password = params.new_password
     account.password_changed_at = datetime.now(tz=timezone.utc)
     await db.commit()

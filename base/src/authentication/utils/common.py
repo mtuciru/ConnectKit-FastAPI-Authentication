@@ -10,17 +10,12 @@ from sqlalchemy import select
 
 from ..models import AccountProtection, AccountSession
 
-_cache = None
-
 __all__ = ["get_database", "AsyncSession", "create_http_exception", "create_websocket_exception",
-           "responses", "sleep_protection", "csrf_expired", "direct_block_account"]
+           "responses", "sleep_protection", "csrf_expired", "direct_block_account", "uuid_extract_time"]
 
 
 async def get_database() -> AsyncGenerator[AsyncSession, Any]:
-    global _cache
-    if _cache is None:
-        _cache = AsyncDatabase()
-    async with _cache as db:
+    async with AsyncDatabase() as db:
         yield db
 
 

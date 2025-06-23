@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import undefer_group, load_only
 from database.asyncio import AsyncSession
 
-from ..middleware import authenticated
+from ..middleware import any_scopes
 from ..models import Account, AccountProtection, AccountSession
 from ..schemes.auth import CSRFToken
 
@@ -31,7 +31,7 @@ def get_secret():
 @router.post("/setup_init", response_model=SetupOTPLink, responses=responses(
     unauthorized, access_timeout, csrf_invalid, {400: "TOTP setup already initiated"}
 ))
-@authenticated(require_password_confirm=True)
+@any_scopes(["user"], active_only=False, require_password_confirm=True)
 async def otp_setup_init(
         request: Request,
         csrf: CSRFToken = Body(),
@@ -58,7 +58,7 @@ async def otp_setup_init(
     {400: "TOTP setup not started"},
     {400: "TOTP setup validation failed"}
 ))
-@authenticated()
+@any_scopes(["user"])
 async def otp_setup_verify(
         request: Request,
         params: OTPCode,
@@ -96,7 +96,7 @@ async def otp_setup_verify(
     {400: "TOTP setup not started"},
     {400: "TOTP setup validation failed"}
 ))
-@authenticated()
+@any_scopes(["user"])
 async def otp_setup_abort(
         request: Request,
         db: AsyncSession = Depends(get_database)
@@ -119,7 +119,7 @@ async def otp_setup_abort(
     unauthorized, access_timeout, csrf_invalid,
     {400: "TOTP not enabled"},
 ))
-@authenticated(require_password_confirm=True)
+@any_scopes(["user"], require_password_confirm=True)
 async def otp_update_codes(
         request: Request,
         csrf: CSRFToken = Body(),
@@ -149,7 +149,7 @@ async def otp_update_codes(
 @router.post("/disable", status_code=status.HTTP_204_NO_CONTENT, responses=responses(
     unauthorized, access_timeout, csrf_invalid
 ))
-@authenticated(require_password_confirm=True)
+@any_scopes(["user"], require_password_confirm=True)
 async def otp_disable(
         request: Request,
         csrf: CSRFToken = Body(),
@@ -172,7 +172,7 @@ async def otp_disable(
 @router.post("/verify", status_code=status.HTTP_204_NO_CONTENT, responses=responses(
     unauthorized, access_timeout, {403: "Wrong code"}
 ))
-@authenticated(active_only=False)
+@any_scopes(["user"], active_only=False)
 async def otp_verify(
         request: Request,
         otp_code: OTPCode,

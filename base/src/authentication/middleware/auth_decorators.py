@@ -13,7 +13,6 @@ from starlette.websockets import WebSocket
 
 from .auth_extractor import AuthenticatedUser
 from ..models import AccountSession
-from ..settings import settings
 
 _P = ParamSpec("_P")
 
@@ -185,293 +184,274 @@ def authenticated(
     return decorator
 
 
-if settings.user_has_scope:
-
-    def has_any_scope(conn: HTTPConnection, scopes: Sequence[str]) -> bool:
-        allowed = False
-        for scope in conn.user.scopes:
-            if scope in scopes:
-                allowed = True
-                break
-        return allowed
-
-
-    def has_all_scope(conn: HTTPConnection, scopes: Sequence[str]) -> bool:
-        for scope in scopes:
-            if scope not in conn.user.scopes:
-                return False
-        return True
+def has_any_scope(conn: HTTPConnection, scopes: Sequence[str]) -> bool:
+    scopes = set(scopes)
+    allowed = False
+    for scope in conn.user.scopes:
+        if scope in scopes:
+            allowed = True
+            break
+    return allowed
 
 
-    def all_scopes(
-            scopes: Sequence[str] | str,
-            active_only: bool = True,
-            require_password_confirm: bool = False,
-            status_code: tuple[int, str] | None = None,
-            redirect: str | None = None
-    ) -> Callable[[Callable[_P, Any]], Callable[_P, Any]]:
-        if isinstance(scopes, str):
-            scopes = [scopes]
+def has_all_scope(conn: HTTPConnection, scopes: Sequence[str]) -> bool:
+    user_scopes = set(conn.user.scopes)
+    for scope in scopes:
+        if scope not in user_scopes:
+            return False
+    return True
 
-        def decorator(
-                func: Callable[_P, Any],
-        ) -> Callable[_P, Any]:
-            idx, type_ = _get_route_type(func)
-            if type_ == "websocket":
-                # Handle websocket functions. (Always async)
-                @functools.wraps(func)
-                async def websocket_wrapper(*args: _P.args, **kwargs: _P.kwargs) -> None:
-                    websocket = kwargs.get("websocket", args[idx] if idx < len(args) else None)
-                    assert isinstance(websocket, WebSocket)
-                    user: AuthenticatedUser = websocket.user
-                    session: AccountSession = websocket.auth
-                    if user.is_authenticated:
-                        if active_only:
-                            if not user.active:
-                                await websocket.close(code=3003, reason="Inactive user disallowed")
-                                return
-                            if not session.otp_success:
-                                await websocket.close(code=3003, reason="OTP verification required")
-                                return
-                        if require_password_confirm:
-                            async with AsyncDatabase() as db:
-                                db.add(session)
-                                if await session.async_need_password_confirm():
-                                    await websocket.close(code=3003, reason="Need password confirmation")
-                                db.expunge(session)
-                        if not has_all_scope(websocket, scopes):
-                            if status_code is not None:
-                                await websocket.close(code=status_code[0], reason=status_code[1])
-                            else:
-                                await websocket.close(code=3003, reason="Forbidden")
-                    else:
-                        await websocket.close(code=3000, reason="Unauthorized")
-                        return
-                    await func(*args, **kwargs)
 
-                return websocket_wrapper
+def all_scopes(
+        scopes: Sequence[str] | str,
+        active_only: bool = True,
+        require_password_confirm: bool = False,
+        status_code: tuple[int, str] | None = None,
+        redirect: str | None = None
+) -> Callable[[Callable[_P, Any]], Callable[_P, Any]]:
+    if isinstance(scopes, str):
+        scopes = [scopes]
 
-            elif is_async_callable(func):
-                # Handle async request/response functions.
-                @functools.wraps(func)
-                async def async_wrapper(*args: _P.args, **kwargs: _P.kwargs) -> Any:
-                    request = kwargs.get("request", args[idx] if idx < len(args) else None)
-                    assert isinstance(request, Request)
-                    user: AuthenticatedUser = request.user
-                    session: AccountSession = request.auth
+    def decorator(
+            func: Callable[_P, Any],
+    ) -> Callable[_P, Any]:
+        idx, type_ = _get_route_type(func)
+        if type_ == "websocket":
+            # Handle websocket functions. (Always async)
+            @functools.wraps(func)
+            async def websocket_wrapper(*args: _P.args, **kwargs: _P.kwargs) -> None:
+                websocket = kwargs.get("websocket", args[idx] if idx < len(args) else None)
+                assert isinstance(websocket, WebSocket)
+                user: AuthenticatedUser = websocket.user
+                session: AccountSession = websocket.auth
+                if user.is_authenticated:
+                    if active_only:
+                        if not user.active:
+                            await websocket.close(code=3003, reason="Inactive user disallowed")
+                            return
+                        if not session.otp_success:
+                            await websocket.close(code=3003, reason="OTP verification required")
+                            return
+                    if require_password_confirm:
+                        async with AsyncDatabase() as db:
+                            db.add(session)
+                            if await session.async_need_password_confirm():
+                                await websocket.close(code=3003, reason="Need password confirmation")
+                            db.expunge(session)
+                    if not has_all_scope(websocket, scopes):
+                        if status_code is not None:
+                            await websocket.close(code=status_code[0], reason=status_code[1])
+                        else:
+                            await websocket.close(code=3003, reason="Forbidden")
+                else:
+                    await websocket.close(code=3000, reason="Unauthorized")
+                    return
+                await func(*args, **kwargs)
 
-                    if user.is_authenticated:
-                        if active_only:
-                            if not user.active:
+            return websocket_wrapper
+
+        elif is_async_callable(func):
+            # Handle async request/response functions.
+            @functools.wraps(func)
+            async def async_wrapper(*args: _P.args, **kwargs: _P.kwargs) -> Any:
+                request = kwargs.get("request", args[idx] if idx < len(args) else None)
+                assert isinstance(request, Request)
+                user: AuthenticatedUser = request.user
+                session: AccountSession = request.auth
+
+                if user.is_authenticated:
+                    if active_only:
+                        if not user.active:
+                            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                                detail="Inactive user disallowed")
+                        if not session.otp_success:
+                            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                                detail="OTP verification required")
+                    if require_password_confirm:
+                        async with AsyncDatabase() as db:
+                            db.add(session)
+                            if await session.async_need_password_confirm():
                                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                                                    detail="Inactive user disallowed")
-                            if not session.otp_success:
+                                                    detail="Need password confirmation")
+                            db.expunge(session)
+                    if not has_all_scope(request, scopes):
+                        if status_code is not None:
+                            raise HTTPException(status_code=status_code[0], detail=status_code[1])
+                        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+                else:
+                    if redirect is not None:
+                        orig_request_qparam = urlencode({"next": str(request.url)})
+                        next_url = f"{redirect}?{orig_request_qparam}"
+                        return RedirectResponse(url=next_url, status_code=status.HTTP_303_SEE_OTHER)
+                    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+                return await func(*args, **kwargs)
+
+            setattr(async_wrapper, "__security__", scopes)
+            return async_wrapper
+
+        else:
+            # Handle sync request/response functions.
+            @functools.wraps(func)
+            def sync_wrapper(*args: _P.args, **kwargs: _P.kwargs) -> Any:
+                request = kwargs.get("request", args[idx] if idx < len(args) else None)
+                assert isinstance(request, Request)
+                user: AuthenticatedUser = request.user
+                session: AccountSession = request.auth
+                if user.is_authenticated:
+                    if active_only:
+                        if not user.active:
+                            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                                detail="Inactive user disallowed")
+                        if not session.otp_success:
+                            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                                detail="OTP verification required")
+                    if require_password_confirm:
+                        with Database() as db:
+                            db.add(session)
+                            if session.need_password_confirm():
                                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                                                    detail="OTP verification required")
-                        if require_password_confirm:
-                            async with AsyncDatabase() as db:
-                                db.add(session)
-                                if await session.async_need_password_confirm():
-                                    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                                                        detail="Need password confirmation")
-                                db.expunge(session)
-                        if not has_all_scope(request, scopes):
-                            if status_code is not None:
-                                raise HTTPException(status_code=status_code[0], detail=status_code[1])
-                            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-                    else:
-                        if redirect is not None:
-                            orig_request_qparam = urlencode({"next": str(request.url)})
-                            next_url = f"{redirect}?{orig_request_qparam}"
-                            return RedirectResponse(url=next_url, status_code=status.HTTP_303_SEE_OTHER)
-                        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
-                    return await func(*args, **kwargs)
+                                                    detail="Need password confirmation")
+                            db.expunge(session)
+                    if not has_all_scope(request, scopes):
+                        if status_code is not None:
+                            raise HTTPException(status_code=status_code[0], detail=status_code[1])
+                        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+                else:
+                    if redirect is not None:
+                        orig_request_qparam = urlencode({"next": str(request.url)})
+                        next_url = f"{redirect}?{orig_request_qparam}"
+                        return RedirectResponse(url=next_url, status_code=status.HTTP_303_SEE_OTHER)
+                    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+                return func(*args, **kwargs)
 
-                setattr(async_wrapper, "__security__", scopes)
-                return async_wrapper
+            setattr(sync_wrapper, "__security__", scopes)
+            return sync_wrapper
 
-            else:
-                # Handle sync request/response functions.
-                @functools.wraps(func)
-                def sync_wrapper(*args: _P.args, **kwargs: _P.kwargs) -> Any:
-                    request = kwargs.get("request", args[idx] if idx < len(args) else None)
-                    assert isinstance(request, Request)
-                    user: AuthenticatedUser = request.user
-                    session: AccountSession = request.auth
-                    if user.is_authenticated:
-                        if active_only:
-                            if not user.active:
+    return decorator
+
+
+def any_scopes(
+        scopes: Sequence[str] | str,
+        active_only: bool = True,
+        require_password_confirm: bool = False,
+        status_code: tuple[int, str] | None = None,
+        redirect: str | None = None
+) -> Callable[[Callable[_P, Any]], Callable[_P, Any]]:
+    if isinstance(scopes, str):
+        scopes = [scopes]
+
+    def decorator(
+            func: Callable[_P, Any],
+    ) -> Callable[_P, Any]:
+        idx, type_ = _get_route_type(func)
+        if type_ == "websocket":
+            # Handle websocket functions. (Always async)
+            @functools.wraps(func)
+            async def websocket_wrapper(*args: _P.args, **kwargs: _P.kwargs) -> None:
+                websocket = kwargs.get("websocket", args[idx] if idx < len(args) else None)
+                assert isinstance(websocket, WebSocket)
+                user: AuthenticatedUser = websocket.user
+                session: AccountSession = websocket.auth
+                if user.is_authenticated:
+                    if active_only:
+                        if not user.active:
+                            await websocket.close(code=3003, reason="Inactive user disallowed")
+                            return
+                        if not session.otp_success:
+                            await websocket.close(code=3003, reason="OTP verification required")
+                            return
+                    if require_password_confirm:
+                        async with AsyncDatabase() as db:
+                            db.add(session)
+                            if await session.async_need_password_confirm():
+                                await websocket.close(code=3003, reason="Need password confirmation")
+                            db.expunge(session)
+                    if not has_any_scope(websocket, scopes):
+                        if status_code is not None:
+                            await websocket.close(code=status_code[0], reason=status_code[1])
+                        else:
+                            await websocket.close(code=3003, reason="Forbidden")
+                else:
+                    await websocket.close(code=3000, reason="Unauthorized")
+                    return
+                await func(*args, **kwargs)
+
+            return websocket_wrapper
+
+        elif is_async_callable(func):
+            # Handle async request/response functions.
+            @functools.wraps(func)
+            async def async_wrapper(*args: _P.args, **kwargs: _P.kwargs) -> Any:
+                request = kwargs.get("request", args[idx] if idx < len(args) else None)
+                assert isinstance(request, Request)
+                user: AuthenticatedUser = request.user
+                session: AccountSession = request.auth
+                if user.is_authenticated:
+                    if active_only:
+                        if not user.active:
+                            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                                detail="Inactive user disallowed")
+                        if not session.otp_success:
+                            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                                detail="OTP verification required")
+                    if require_password_confirm:
+                        async with AsyncDatabase() as db:
+                            db.add(session)
+                            if await session.async_need_password_confirm():
                                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                                                    detail="Inactive user disallowed")
-                            if not session.otp_success:
+                                                    detail="Need password confirmation")
+                            db.expunge(session)
+                    if not has_any_scope(request, scopes):
+                        if status_code is not None:
+                            raise HTTPException(status_code=status_code[0], detail=status_code[1])
+                        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+                else:
+                    if redirect is not None:
+                        orig_request_qparam = urlencode({"next": str(request.url)})
+                        next_url = f"{redirect}?{orig_request_qparam}"
+                        return RedirectResponse(url=next_url, status_code=status.HTTP_303_SEE_OTHER)
+                    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+                return await func(*args, **kwargs)
+
+            setattr(async_wrapper, "__security__", scopes)
+            return async_wrapper
+
+        else:
+            # Handle sync request/response functions.
+            @functools.wraps(func)
+            def sync_wrapper(*args: _P.args, **kwargs: _P.kwargs) -> Any:
+                request = kwargs.get("request", args[idx] if idx < len(args) else None)
+                assert isinstance(request, Request)
+                user: AuthenticatedUser = request.user
+                session: AccountSession = request.auth
+                if user.is_authenticated:
+                    if active_only:
+                        if not user.active:
+                            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                                detail="Inactive user disallowed")
+                        if not session.otp_success:
+                            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                                detail="OTP verification required")
+                    if require_password_confirm:
+                        with Database() as db:
+                            db.add(session)
+                            if session.need_password_confirm():
                                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                                                    detail="OTP verification required")
-                        if require_password_confirm:
-                            with Database() as db:
-                                db.add(session)
-                                if session.need_password_confirm():
-                                    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                                                        detail="Need password confirmation")
-                                db.expunge(session)
-                        if not has_all_scope(request, scopes):
-                            if status_code is not None:
-                                raise HTTPException(status_code=status_code[0], detail=status_code[1])
-                            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-                    else:
-                        if redirect is not None:
-                            orig_request_qparam = urlencode({"next": str(request.url)})
-                            next_url = f"{redirect}?{orig_request_qparam}"
-                            return RedirectResponse(url=next_url, status_code=status.HTTP_303_SEE_OTHER)
-                        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
-                    return func(*args, **kwargs)
+                                                    detail="Need password confirmation")
+                            db.expunge(session)
+                    if not has_any_scope(request, scopes):
+                        if status_code is not None:
+                            raise HTTPException(status_code=status_code[0], detail=status_code[1])
+                        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+                else:
+                    if redirect is not None:
+                        orig_request_qparam = urlencode({"next": str(request.url)})
+                        next_url = f"{redirect}?{orig_request_qparam}"
+                        return RedirectResponse(url=next_url, status_code=status.HTTP_303_SEE_OTHER)
+                    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+                return func(*args, **kwargs)
 
-                setattr(sync_wrapper, "__security__", scopes)
-                return sync_wrapper
+            setattr(sync_wrapper, "__security__", scopes)
+            return sync_wrapper
 
-        return decorator
-
-
-    def any_scopes(
-            scopes: Sequence[str] | str,
-            active_only: bool = True,
-            require_password_confirm: bool = False,
-            status_code: tuple[int, str] | None = None,
-            redirect: str | None = None
-    ) -> Callable[[Callable[_P, Any]], Callable[_P, Any]]:
-        if isinstance(scopes, str):
-            scopes = [scopes]
-
-        def decorator(
-                func: Callable[_P, Any],
-        ) -> Callable[_P, Any]:
-            idx, type_ = _get_route_type(func)
-            if type_ == "websocket":
-                # Handle websocket functions. (Always async)
-                @functools.wraps(func)
-                async def websocket_wrapper(*args: _P.args, **kwargs: _P.kwargs) -> None:
-                    websocket = kwargs.get("websocket", args[idx] if idx < len(args) else None)
-                    assert isinstance(websocket, WebSocket)
-                    user: AuthenticatedUser = websocket.user
-                    session: AccountSession = websocket.auth
-                    if user.is_authenticated:
-                        if active_only:
-                            if not user.active:
-                                await websocket.close(code=3003, reason="Inactive user disallowed")
-                                return
-                            if not session.otp_success:
-                                await websocket.close(code=3003, reason="OTP verification required")
-                                return
-                        if require_password_confirm:
-                            async with AsyncDatabase() as db:
-                                db.add(session)
-                                if await session.async_need_password_confirm():
-                                    await websocket.close(code=3003, reason="Need password confirmation")
-                                db.expunge(session)
-                        if not has_any_scope(websocket, scopes):
-                            if status_code is not None:
-                                await websocket.close(code=status_code[0], reason=status_code[1])
-                            else:
-                                await websocket.close(code=3003, reason="Forbidden")
-                    else:
-                        await websocket.close(code=3000, reason="Unauthorized")
-                        return
-                    await func(*args, **kwargs)
-
-                return websocket_wrapper
-
-            elif is_async_callable(func):
-                # Handle async request/response functions.
-                @functools.wraps(func)
-                async def async_wrapper(*args: _P.args, **kwargs: _P.kwargs) -> Any:
-                    request = kwargs.get("request", args[idx] if idx < len(args) else None)
-                    assert isinstance(request, Request)
-                    user: AuthenticatedUser = request.user
-                    session: AccountSession = request.auth
-                    if user.is_authenticated:
-                        if active_only:
-                            if not user.active:
-                                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                                                    detail="Inactive user disallowed")
-                            if not session.otp_success:
-                                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                                                    detail="OTP verification required")
-                        if require_password_confirm:
-                            async with AsyncDatabase() as db:
-                                db.add(session)
-                                if await session.async_need_password_confirm():
-                                    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                                                        detail="Need password confirmation")
-                                db.expunge(session)
-                        if not has_any_scope(request, scopes):
-                            if status_code is not None:
-                                raise HTTPException(status_code=status_code[0], detail=status_code[1])
-                            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-                    else:
-                        if redirect is not None:
-                            orig_request_qparam = urlencode({"next": str(request.url)})
-                            next_url = f"{redirect}?{orig_request_qparam}"
-                            return RedirectResponse(url=next_url, status_code=status.HTTP_303_SEE_OTHER)
-                        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
-                    return await func(*args, **kwargs)
-
-                setattr(async_wrapper, "__security__", scopes)
-                return async_wrapper
-
-            else:
-                # Handle sync request/response functions.
-                @functools.wraps(func)
-                def sync_wrapper(*args: _P.args, **kwargs: _P.kwargs) -> Any:
-                    request = kwargs.get("request", args[idx] if idx < len(args) else None)
-                    assert isinstance(request, Request)
-                    user: AuthenticatedUser = request.user
-                    session: AccountSession = request.auth
-                    if user.is_authenticated:
-                        if active_only:
-                            if not user.active:
-                                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                                                    detail="Inactive user disallowed")
-                            if not session.otp_success:
-                                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                                                    detail="OTP verification required")
-                        if require_password_confirm:
-                            with Database() as db:
-                                db.add(session)
-                                if session.need_password_confirm():
-                                    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                                                        detail="Need password confirmation")
-                                db.expunge(session)
-                        if not has_any_scope(request, scopes):
-                            if status_code is not None:
-                                raise HTTPException(status_code=status_code[0], detail=status_code[1])
-                            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-                    else:
-                        if redirect is not None:
-                            orig_request_qparam = urlencode({"next": str(request.url)})
-                            next_url = f"{redirect}?{orig_request_qparam}"
-                            return RedirectResponse(url=next_url, status_code=status.HTTP_303_SEE_OTHER)
-                        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
-                    return func(*args, **kwargs)
-
-                setattr(sync_wrapper, "__security__", scopes)
-                return sync_wrapper
-
-        return decorator
-else:
-    def all_scopes(
-            scopes: Sequence[str] | str,
-            active_only: bool = True,
-            require_password_confirm: bool = False,
-            status_code: tuple[int, str] | None = None,
-            redirect: str | None = None
-    ) -> Callable[[Callable[_P, Any]], Callable[_P, Any]]:
-        raise NotImplementedError("Scopes support not enabled")
-
-
-    def any_scopes(
-            scopes: Sequence[str] | str,
-            active_only: bool = True,
-            require_password_confirm: bool = False,
-            status_code: tuple[int, str] | None = None,
-            redirect: str | None = None
-    ) -> Callable[[Callable[_P, Any]], Callable[_P, Any]]:
-        raise NotImplementedError("Scopes support not enabled")
+    return decorator

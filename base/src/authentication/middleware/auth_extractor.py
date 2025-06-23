@@ -1,5 +1,5 @@
 from datetime import datetime, timezone, timedelta
-from typing import List
+from typing import List, Callable
 
 import jwt
 from database.asyncio.session import AsyncDatabase
@@ -7,23 +7,24 @@ import http.cookies
 
 from fastapi.dependencies.models import Dependant, SecurityRequirement
 from fastapi.security.base import SecurityBase
-from fastapi.openapi.models import SecurityBase as SecurityBaseModel, APIKey, HTTPBearer
+from fastapi.openapi.models import SecurityBase as SecurityBaseModel, APIKey
 from sqlalchemy import select
 from sqlalchemy.orm import load_only
 from starlette.datastructures import MutableHeaders
 from starlette.requests import HTTPConnection
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Scope, Receive, Send, Message
 
 from ..impl.token_utility import (ClientInfo, decode_client_fingerprint, get_client_fingerprint,
                                   decode_session_token, TokenExpired, TokenInvalid)
 from ..models import Account, AccountSession
-from ..settings import settings, SecretStore
+from ..settings import settings
 from ..utils import json
 
 __all__ = ["AnonymousUser", "AnonymousCredentials",
            "AuthenticatedUser", "AuthenticatedCredentials",
-           "AuthenticationMiddleware", "DummyObject"]
+           "AuthenticationMiddleware", "DummyObject",
+           "auth_pair", "auth_error"]
 
 
 class IsAnonymous:
@@ -211,35 +212,52 @@ class AuthenticatedUser(IsAnonymous):
     def active(self):
         return self._account.active
 
-    if settings.user_has_scope:
-        @property
-        def scopes(self) -> List[str]:
-            if self._scopes is None:
-                self._scopes = self._account.scopes
-            return self._scopes
+    @property
+    def scopes(self) -> List[str]:
+        if self._scopes is None:
+            self._scopes = self._account.scopes
+        return self._scopes
 
 
-class Verify:
-    @staticmethod
-    async def verify(access_payload: dict, fingerprint: str):
-        async with AsyncDatabase() as db:
-            session = await db.scalar(select(AccountSession).options(
-                load_only(AccountSession.account, AccountSession.fingerprint,
-                          AccountSession.identity, AccountSession.created_at)
-            ).filter_by(id=access_payload["sid"]))
-            if session is None:
-                return None
-            if session.fingerprint != fingerprint or session.identity != access_payload["jit"]:
-                await db.delete(session)
-                await db.commit()
-                return None
-            db.expunge(session)
-            return session
+async def verify(access_payload: dict, fingerprint: str):
+    async with AsyncDatabase() as db:
+        session = await db.scalar(select(AccountSession).options(
+            load_only(AccountSession.account, AccountSession.fingerprint,
+                      AccountSession.identity, AccountSession.created_at)
+        ).filter_by(id=access_payload["sid"]))
+        if session is None:
+            return None
+        if session.fingerprint != fingerprint or session.identity != access_payload["jit"]:
+            await db.delete(session)
+            await db.commit()
+            return None
+        db.expunge(session)
+        return session
+
+
+auth_pair = tuple[AuthenticatedCredentials, AuthenticatedUser] | None
+auth_error = Response | None
+
+
+def null_process_header(header_value: str) -> tuple[auth_pair, auth_error]:
+    return None, None
+
+
+_refresh_url_cache: str = None
+
+
+def _get_path(conn: HTTPConnection):
+    global _refresh_url_cache
+    if _refresh_url_cache is None:
+        _refresh_url_cache = conn.url_for("refresh_token")
+    return _refresh_url_cache
 
 
 class AuthenticationMiddleware:
-    def __init__(self, app: ASGIApp) -> None:
+    def __init__(self, app: ASGIApp,
+                 header_processor: Callable[[str], tuple[auth_pair, auth_error]] = None) -> None:
         self.app = app
+        self.header_processor = header_processor if header_processor is not None else null_process_header
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] not in ("http", "websocket"):  # pragma: no cover
@@ -253,39 +271,48 @@ class AuthenticationMiddleware:
             return
         # credentials = None
         # user = None
-        access = connection.cookies.get(settings.cookie_name)
-        if settings.secret_store == SecretStore.HEADER:
-            access = connection.headers.get("Authorization")
-            # This Bearer token by our format, not oauth.
-            if access is not None:
-                access = access.removeprefix("Bearer ")
-        if access is None:
-            credentials = AnonymousCredentials(None, connection)
-            credentials.mark_session_data_dirty()
-            user = AnonymousUser()
+        auth_header = connection.headers.get("Authorization", None)
+        ap, ae = self.header_processor(auth_header) if auth_header is not None else None
+        if ap is not None:
+            credentials, user = ap
+        elif ae is not None:
+            await ae(scope, receive, send)
+            return
         else:
-            # try decode as session cookie
-            try:
-                access_payload = decode_session_token(access, "access")
-                session = await Verify.verify(access_payload, get_client_fingerprint(connection))
-                if session is None:
-                    raise TokenInvalid
-                account = session.account
-                credentials = AuthenticatedCredentials(session)
-                user = AuthenticatedUser(account)
-            except TokenExpired as e:
-                if scope["type"] == "websocket":
-                    # Use code 3000, that's mean Unauthorized.
-                    await send({"type": "websocket.close", "code": 3000, "reason": str(e)})
-                else:
-                    # Not standard code Auth Timeout (Access Timeout), instead of 401 or 403 to avoid code ambiguity
-                    response = JSONResponse({"detail": str(e)}, status_code=419)
-                    await response(scope, receive, send)
-                return
-            except TokenInvalid:
-                # Don't raise error when token invalid, it's means that it for anon user (or not, but who cares)
-                credentials = AnonymousCredentials(access, connection)
+            access = connection.cookies.get(settings.cookie_name)
+            if access is None:
+                credentials = AnonymousCredentials(None, connection)
+                credentials.mark_session_data_dirty()
                 user = AnonymousUser()
+            else:
+                # try decode as session cookie
+                try:
+                    try:
+                        access_payload = decode_session_token(access, "access")
+                    except TokenExpired as e:
+                        if connection.url == _get_path(connection):
+                            access_payload = decode_session_token(access, "access", True)
+                        else:
+                            raise e
+                    session = await verify(access_payload, get_client_fingerprint(connection))
+                    if session is None:
+                        raise TokenInvalid
+                    account = session.account
+                    credentials = AuthenticatedCredentials(session)
+                    user = AuthenticatedUser(account)
+                except TokenExpired as e:
+                    if scope["type"] == "websocket":
+                        # Use code 3000, that's mean Unauthorized.
+                        await send({"type": "websocket.close", "code": 3000, "reason": str(e)})
+                    else:
+                        # Not standard code Auth Timeout (Access Timeout), instead of 401 or 403 to avoid code ambiguity
+                        response = JSONResponse({"detail": str(e)}, status_code=419)
+                        await response(scope, receive, send)
+                    return
+                except TokenInvalid:
+                    # Don't raise error when token invalid, it's means that it for anon user (or not, but who cares)
+                    credentials = AnonymousCredentials(access, connection)
+                    user = AnonymousUser()
         scope["auth"] = credentials
         scope["user"] = user
 
@@ -311,21 +338,13 @@ class AuthenticationScheme(SecurityBase):
         self.model = model
 
 
-if settings.secret_store == SecretStore.COOKIE:
-    _secure_model = AuthenticationScheme(
-        "HttpOnly cookie JWT access token",
-        APIKey.model_validate({
-            "in": "cookie",
-            "name": settings.cookie_name,
-        })
-    )
-elif settings.secret_store == SecretStore.HEADER:
-    _secure_model = AuthenticationScheme(
-        "HTTP Bearer JWT access token",
-        HTTPBearer(bearerFormat="JWT")
-    )
-else:
-    raise NotImplementedError("Unsupported Secret Store")
+_secure_model = AuthenticationScheme(
+    "HttpOnly cookie JWT access token",
+    APIKey.model_validate({
+        "in": "cookie",
+        "name": settings.cookie_name,
+    })
+)
 
 
 def __patch_dependant():

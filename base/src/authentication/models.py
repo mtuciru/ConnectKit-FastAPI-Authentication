@@ -38,8 +38,7 @@ class Account(AsyncAttrs, Base):
     # Активация аккаунта. Не активированный аккаунт может залогиниться, но не может взаимодействовать с системой за рамками запроса информации о себе.
     active: Mapped[bool] = mapped_column(nullable=False, server_default="FALSE")
     totp: Mapped[bool] = mapped_column(nullable=False, server_default="FALSE", deferred=True, deferred_group="totp")
-    if settings.user_has_scope:
-        _scopes: Mapped[str] = mapped_column(nullable=False, server_default="[]")
+    _scopes: Mapped[str] = mapped_column(nullable=False, server_default="[]")
     # Дата создания аккаунта
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False,
                                                  server_default=func.current_timestamp(),
@@ -80,28 +79,27 @@ class Account(AsyncAttrs, Base):
         except Argon2Error:
             return False
 
-    if settings.user_has_scope:
-        @hybrid_property
-        def scopes(self):
-            decoded = json.loads(self._scopes)
-            if isinstance(decoded, list):
-                return decoded
-            else:
-                return []
+    @hybrid_property
+    def scopes(self):
+        decoded = json.loads(self._scopes)
+        if isinstance(decoded, list):
+            return decoded
+        else:
+            return []
 
-        @scopes.setter
-        def scopes(self, value: list[str]):
-            if not isinstance(value, list):
-                raise ValueError("Scopes must be a list of strings")
-            valid = True
-            for s in value:
-                if not isinstance(s, str):
-                    valid = False
-                    break
-            if not valid:
-                raise ValueError("Scopes must be a list of strings")
-            encoded = json.dumps(valid)
-            self._scopes = encoded
+    @scopes.setter
+    def scopes(self, value: list[str]):
+        if not isinstance(value, list):
+            raise ValueError("Scopes must be a list of strings")
+        valid = True
+        for s in value:
+            if not isinstance(s, str):
+                valid = False
+                break
+        if not valid:
+            raise ValueError("Scopes must be a list of strings")
+        encoded = json.dumps(valid)
+        self._scopes = encoded
 
 
 class AccountSession(AsyncAttrs, Base):

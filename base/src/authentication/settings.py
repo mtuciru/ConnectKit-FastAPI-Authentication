@@ -4,7 +4,7 @@ from typing import Literal
 from pydantic import BaseModel as BaseModelPydantic, ConfigDict, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-__all__ = ["settings", "Settings", "BaseModel", "BaseModelDB", "SecretStore"]
+__all__ = ["settings", "Settings", "BaseModel", "BaseModelDB"]
 
 
 class BaseModelDB(BaseModelPydantic):
@@ -23,27 +23,7 @@ class SecretAlgorithm(Enum):
     HS512 = "HS512"
 
 
-class SecretStore(Enum):
-    COOKIE = "cookie"
-    """
-    Access token stored in cookie
-    Refresh token returned from login and refresh methods    
-    
-    
-    If access token expired, return code can:
-     * be 419 for http
-     * be 3000 (Unautorized) for websocket
-    """
-    HEADER = "header"
-    """
-    Access token returned to client and expected in header 'Authorization'
-    Refresh token returned from login and refresh methods
-    
-    
-    If access token expired, return code can:
-     * be 419 for http
-     * be 3000 (Unautorized) for websocket
-    """
+
 
 
 class Settings(BaseSettings):
@@ -79,7 +59,6 @@ class Settings(BaseSettings):
     
     Default: HS256
     """
-    secret_store: SecretStore = SecretStore.COOKIE
     # Issuer for inner tokens and otp installer
     issuer: str = "Localhost inc."
     # Lifetime of inner access token in minutes. Must be smaller
@@ -108,8 +87,6 @@ class Settings(BaseSettings):
     # Save user events history (update password/email/phone, success/failed login, success/failed checks, etc.)
     user_save_history: bool = False  # TODO
     user_history_events: list[str] = []
-    # Use the scope model
-    user_has_scope: bool = False
 
     @field_validator('secret', mode='after')
     @classmethod

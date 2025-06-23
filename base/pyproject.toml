@@ -1,6 +1,6 @@
 [project]
 name = "ConnectKit-FastAPI-Authentication"
-version = "2.0.0"
+version = "2.1.0"
 description = "User accounts and jwt authentication for FastAPI services"
 authors = [
     { name = "RealMetamorph", email = "andr.timchuk@yandex.ru" },
@@ -27,7 +27,6 @@ dependencies = [
     "ietfparse>=1.9.0",
     "filelock>=3.18.0",
     "pyotp>=2.9.0",
-    "oauthlib>=3.2.2",
     "aiohttp>=3.12.12"
 ]
 

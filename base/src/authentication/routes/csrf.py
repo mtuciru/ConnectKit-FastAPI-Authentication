@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, Request, status, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import undefer_group
 
-from ..middleware import anonymous, authenticated, AnonymousCredentials
+from ..middleware import anonymous, any_scopes, AnonymousCredentials
 from ..models import AccountProtection
 
 from ..schemes.auth import LoginBy, LoginCSRFData, CSRFToken
@@ -95,12 +95,11 @@ async def login_csrf(
 @router.post("/confirm", response_model=CSRFToken, responses=responses(
     unauthorized, inactive_disallowed, access_timeout
 ))
-@authenticated()
+@any_scopes(["user"])
 async def confirm_csrf(
         request: Request,
         db: AsyncSession = Depends(get_database)
 ):
-    """Защита от перебора паролей и от утечки аккаунта"""
     await sleep_protection()
     protection: AccountProtection = await db.scalar(select(AccountProtection).options(
         undefer_group("confirm")
@@ -115,7 +114,7 @@ async def confirm_csrf(
     else:
         if protection.confirm_delay > datetime.now(tz=timezone.utc):
             raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many requests")
-        if csrf_expired(protection.confirm_uuid):
+        if csrf_expired(uuid_extract_time(protection.confirm_uuid)):
             protection.confirm_uuid = str(uuid.uuid1())
         if datetime.now(tz=timezone.utc) - protection.confirm_delay > timedelta(hours=1):
             # За давностью лет (Если неудачная попытка проверки была давно, то счётчик попыток сбрасывается)

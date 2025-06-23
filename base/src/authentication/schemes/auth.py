@@ -219,5 +219,4 @@ class NewAccount(BaseModel):
         phone: phone_number_type | None = None
     password: password_type
     active: bool = False
-    if settings.user_has_scope:
-        scopes: list[str] = []
+    scopes: list[str] = []

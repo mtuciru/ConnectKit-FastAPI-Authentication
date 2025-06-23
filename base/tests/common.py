@@ -23,7 +23,7 @@ async def root():
     return "It's root"
 
 
-_fastapi.include_router(router, prefix="/api/auth")
+_fastapi.include_router(router, prefix="/api")
 
 
 @pytest.fixture

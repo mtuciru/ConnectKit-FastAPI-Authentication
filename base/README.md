@@ -1,8 +1,8 @@
-# ConnectKit FastAPIAuthentication [*en*|[ru](./README_RU.md)]
+# ConnectKit FastAPI Authentication [*en*|[ru](./README_RU.md)]
 
 ___
 
-ConnectKit FastAPIAuthentication adds accounts, user sessions, and
+ConnectKit FastAPI Authentication adds accounts, user sessions, and
 a user authentication mechanism using JWT for FastAPI applications.
 
 Logging in via oauth2 or OpenID connect is not supported at the moment.
@@ -14,7 +14,7 @@ Not fully tested version
 ___
 
 ```shell
-pip install ConnectKit-Authentication-FastAPI
+pip install ConnectKit-FastAPI-Authentication
 ```
 
 ## Usage

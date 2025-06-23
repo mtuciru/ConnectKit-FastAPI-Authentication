@@ -5,11 +5,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import undefer_group
 from starlette import status
 
+from ..impl import BlockedAccount
 from ..impl.token_utility import reset_cookie, TokenExpired, TokenInvalid
-from ..middleware import anonymous, authenticated, AnonymousCredentials
+from ..middleware import anonymous, any_scopes, AnonymousCredentials
 from ..models import Account, AccountProtection, AccountSession
 
-from ..schemes.auth import LoginBy, Tokens, AccountCredentials, CSRFToken, ConfirmPassword
+from ..schemes.auth import LoginBy, Tokens, AccountCredentials, ConfirmPassword
 from ..schemes.responses import (already_authenticated, csrf_invalid, invalid_credentials, account_blocked,
                                  unauthorized, access_timeout)
 from ..settings import settings
@@ -17,7 +18,7 @@ from ..settings import settings
 from ..utils.common import get_database, responses, sleep_protection, uuid_extract_time, csrf_expired, \
     direct_block_account
 from ..utils.functions import validate_confirm_csrf, count_attempts
-from ..impl.auth_utility import init_tokens, refresh_tokens
+from ..impl.auth_utility import init_tokens, refresh_tokens, InvalidRefreshToken
 from database.asyncio import AsyncSession
 
 router = APIRouter(tags=["Login operations"])
@@ -104,7 +105,7 @@ async def login(
 @router.post("/logout", response_model=Tokens, responses=responses(
     unauthorized, access_timeout
 ))
-@authenticated(active_only=False)
+@any_scopes(["user"], active_only=False)
 async def logout(
         request: Request,
         response: Response,
@@ -122,7 +123,7 @@ async def logout(
 @router.post("/refresh", response_model=Tokens, responses=responses(
     unauthorized, access_timeout, {419: "Session expired", 403: "Token invalid"}
 ))
-@authenticated(active_only=False)
+@any_scopes(["user"], active_only=False)
 async def refresh_token(
         request: Request,
         response: Response,
@@ -138,7 +139,7 @@ async def refresh_token(
         await db.delete(session)
         await db.commit()
         raise HTTPException(status_code=419, detail="Session expired")
-    except TokenInvalid:
+    except (TokenInvalid, InvalidRefreshToken, BlockedAccount):
         await db.delete(session)
         await db.commit()
         raise HTTPException(status_code=403, detail="Token invalid")
@@ -147,7 +148,7 @@ async def refresh_token(
 @router.post("/confirm", status_code=204, responses=responses(
     unauthorized, access_timeout, csrf_invalid, invalid_credentials
 ))
-@authenticated()
+@any_scopes(["user"])
 async def confirm_password(
         request: Request,
         params: ConfirmPassword,

@@ -33,8 +33,9 @@ async def create_new_account(new_account: NewAccount, check_can_send_email: bool
             account.phone = new_account.phone
         account.password = new_account.password
         account.active = new_account.active
-        if settings.user_has_scope:
-            account.scopes = new_account.scopes
+        scopes = ["user"]
+        scopes.extend(new_account.scopes)
+        account.scopes = scopes
         db.add(account)
         await db.flush()
         protection = AccountProtection()
