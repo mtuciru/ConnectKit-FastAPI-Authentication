@@ -1,5 +1,5 @@
 from datetime import datetime, timezone, timedelta
-from typing import List, Callable
+from typing import List, Callable, Any
 
 import jwt
 from database.asyncio.session import AsyncDatabase
@@ -187,10 +187,43 @@ class AuthenticatedCredentials(IsAnonymous):
         return self._info
 
 
+class ManualAuthenticatedCredentials(IsAnonymous):
+
+    @property
+    def is_authenticated(self) -> bool:
+        return True
+
+    def __init__(self, info: dict | None):
+        self._info = info if info is not None else {}
+
+    @property
+    def session_id(self) -> int | None:
+        return self._info.get("id", None)
+
+    @property
+    def session(self) -> Any:
+        return self._info.get("session", None)
+
+    @property
+    def created_at(self) -> datetime | None:
+        return self._info.get("created_at", None)
+
+    @property
+    def invalid_after(self) -> datetime | None:
+        return self._info.get("invalid_after", None)
+
+    @property
+    def client_info(self) -> ClientInfo | None:
+        return self._info.get("client_info", None)
+
+
 class AuthenticatedUser(IsAnonymous):
-    def __init__(self, account: Account):
+    def __init__(self, account: Account, scopes: list[str] = None):
         self._account = account
-        self._scopes = None
+        if scopes is None:
+            self._scopes = account.scopes
+        else:
+            self._scopes = scopes
 
     @property
     def is_authenticated(self) -> bool:
@@ -214,8 +247,6 @@ class AuthenticatedUser(IsAnonymous):
 
     @property
     def scopes(self) -> List[str]:
-        if self._scopes is None:
-            self._scopes = self._account.scopes
         return self._scopes
 
 
@@ -235,7 +266,7 @@ async def verify(access_payload: dict, fingerprint: str):
         return session
 
 
-auth_pair = tuple[AuthenticatedCredentials, AuthenticatedUser] | None
+auth_pair = tuple[ManualAuthenticatedCredentials, AuthenticatedUser] | None
 auth_error = Response | None
 
 

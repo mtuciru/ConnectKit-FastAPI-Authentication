@@ -77,8 +77,12 @@ def anonymous(
 def authenticated(
         active_only: bool = True,
         require_password_confirm: bool = False,
-        redirect: str | None = None
+        redirect: str | None = None,
+        scopes_info: list[str] | None = None
 ) -> Callable[[Callable[_P, Any]], Callable[_P, Any]]:
+    if scopes_info is not None and isinstance(scopes_info, list):
+        scopes_info = list(scopes_info)
+
     def decorator(
             func: Callable[_P, Any],
     ) -> Callable[_P, Any]:
@@ -144,7 +148,7 @@ def authenticated(
                     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
                 return await func(*args, **kwargs)
 
-            setattr(async_wrapper, "__security__", [])
+            setattr(async_wrapper, "__security__", scopes_info)
             return async_wrapper
 
         else:
@@ -178,7 +182,7 @@ def authenticated(
                     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
                 return func(*args, **kwargs)
 
-            setattr(sync_wrapper, "__security__", [])
+            setattr(sync_wrapper, "__security__", scopes_info)
             return sync_wrapper
 
     return decorator

@@ -1,6 +1,6 @@
 [project]
 name = "ConnectKit-FastAPI-Authentication"
-version = "2.2.0"
+version = "2.3.0"
 description = "User accounts and jwt authentication for FastAPI services"
 authors = [
     { name = "RealMetamorph", email = "andr.timchuk@yandex.ru" },
