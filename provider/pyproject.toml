@@ -1,0 +1,52 @@
+[project]
+name = "ConnectKit-FastAPI-OAuth2"
+version = "0.1.0"
+description = "User accounts and oauth2 provider for FastAPI services"
+authors = [
+    { name = "RealMetamorph", email = "andr.timchuk@yandex.ru" },
+]
+keywords = ["connectkit", "authentication", "authorization", "oauth2", "fastapi"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python :: 3",
+    "Intended Audience :: Developers",
+    "Framework :: FastAPI"
+]
+requires-python = ">=3.10"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+
+dependencies = [
+    "fastapi>=0.118.0",
+    "pydantic>=2.11.9",
+    "pydantic-settings>=2.11.0",
+    "ConnectKit-Database>=2.2.1",
+    "PyJWT>=2.10.1",
+    "cryptography>=46.0.2",
+    "argon2-cffi>=25.1.0",
+    "ietfparse>=1.9.0",
+    "filelock>=3.19.1",
+    "email-validator>=2.3.0",
+    "phonenumbers>=9.0.20"
+]
+
+[project.urls]
+Homepage = "https://github.com/mtuciru/ConnectKit-FastAPI-Authentication/tree/by_oauth2_model"
+Repository = "https://github.com/mtuciru/ConnectKit-FastAPI-Authentication.git"
+
+[project.optional-dependencies]
+orjson = [
+    "orjson>=3.10.15",
+    "ConnectKit-Database[orjson]>=2.2.1",
+]
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[tool.pdm.scripts]
+tests = "echo 'tests will be here'"
+
+[tool.pdm]
+distribution = true
