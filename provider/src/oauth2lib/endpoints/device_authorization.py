@@ -1,13 +1,14 @@
 from .base import BaseEndpoint, endpoint
 from ..common import Request
 from ..grant_types import DeviceCodeGrant
+from ..validators import RequestValidator
 
 __all__ = ["DeviceAuthorizationEndpoint"]
 
 
 class DeviceAuthorizationEndpoint(BaseEndpoint):
-    def __init__(self, device_code_grant: DeviceCodeGrant):
-        BaseEndpoint.__init__(self)
+    def __init__(self, request_validator: RequestValidator, device_code_grant: DeviceCodeGrant):
+        BaseEndpoint.__init__(self, request_validator)
         self._device_code_grant = device_code_grant
 
     @property

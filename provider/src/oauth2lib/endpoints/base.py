@@ -6,6 +6,7 @@ from fastapi import Request as FastAPIRequest, Response as FastAPIResponse, HTTP
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import json_adapter as json
+from ..validators import RequestValidator
 from ..common import Request, aw, safe_string_equals, is_secure_required
 from ..errors import InvalidRequestError, OAuth2Error, ServerError, TemporarilyUnavailableError
 
@@ -16,18 +17,28 @@ _result_signature = Callable[["BaseEndpoint", FastAPIRequest, AsyncSession], Cor
 
 
 class BaseEndpoint:
-    def __init__(self):
+    available: bool = True
+    request_validator: RequestValidator
+
+    def __init__(self, request_validator: RequestValidator):
         self.available = True
+        self.request_validator = request_validator or RequestValidator()
 
     @staticmethod
-    def _raise_on_missing_token(request: Request):
-        """Raise error on missing token."""
+    def _raise_on_invalid_token_param(request: Request):
+        """
+        Raise error on missing or invalid token.
+        """
         if not request.token:
             raise InvalidRequestError(request=request, description='Missing token parameter.')
+        for param in ('token', 'token_type_hint', 'client_id', 'client_secret'):
+            if param in request.duplicate_params:
+                raise InvalidRequestError(description=f'Duplicate "{param}" parameter.', request=request)
 
     @staticmethod
     def _raise_on_bad_post_request(request: Request):
-        """Raise if invalid POST request received
+        """
+        Raise if invalid POST request received
         """
         if request.request.method.upper() == 'POST':
             if request.has_query:
@@ -83,7 +94,7 @@ def endpoint(f: _endpoint_signature) -> _result_signature:
             except OAuth2Error:
                 raise
             except Exception:
-                raise ServerError(description="Unexpected server error")
+                raise ServerError(status_code=500, description="Unexpected server error")
         except OAuth2Error as e:
             h, b, s = {"Content-Type": "application/json"}, e.json, e.status_code
             h.update(await self._create_cors_headers(request))

@@ -9,7 +9,7 @@ __all__ = ['UserInfoEndpoint']
 
 class UserInfoEndpoint(BaseEndpoint):
     def __init__(self, request_validator: RequestValidator):
-        BaseEndpoint.__init__(self)
+        BaseEndpoint.__init__(self, request_validator)
         self.request_validator = request_validator
 
     @endpoint
@@ -38,7 +38,6 @@ class UserInfoEndpoint(BaseEndpoint):
         self._raise_on_bad_post_request(request)
         # User from specified access_token in Authorization header
         # If user is None, that access_token is invalid, expire, etc.
-        maybe_user = request.user_from_request
-        if maybe_user is None:
+        request.set_user()
+        if request.user is None:
             raise errors.InvalidTokenError()
-        request.user = maybe_user

@@ -4,7 +4,7 @@ from starlette.websockets import WebSocketState
 
 from oauth2lib.errors import OAuth2Error, UseDPoPNonce
 
-__all__ = ["ExceptionContainer", "oauth2_exception_handler"]
+__all__ = ["ExceptionContainer", "oauth2wrap_exception_handler", "oauth2_exception_handler"]
 
 
 class ExceptionContainer(Exception):
@@ -54,6 +54,19 @@ class ExceptionContainer(Exception):
         return Response(content=self._error.json, headers=headers, status_code=self._error.status_code)
 
 
-async def oauth2_exception_handler(request: Request | WebSocket,
-                                   error: Exception | ExceptionContainer) -> Response | None:
+async def oauth2wrap_exception_handler(request: Request | WebSocket,
+                                       error: Exception | ExceptionContainer) -> Response | None:
     return await error.response(request)
+
+
+async def oauth2_exception_handler(request: Request | WebSocket,
+                                   error: Exception | OAuth2Error) -> Response | None:
+    return await oauth2wrap_exception_handler(request, ExceptionContainer(
+        error=error,
+        schemes=["Bearer", "DPoP"],
+        used_schemes=None,
+        headers=None,
+        protocol=request.scope.get("auth_websocket_protocol"),
+        websocket_status=3003,
+        use_detail=True
+    ))

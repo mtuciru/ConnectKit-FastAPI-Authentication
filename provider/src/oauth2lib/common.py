@@ -186,10 +186,15 @@ class Request:
     ui_locales: str | list[str] = None
     id_token_hint: str = None
     login_hint: str = None
-    acr_values: str = None
+    acr_values: str | list[str] = None
     claims_locales: str | list[str] = None
     claims: str | dict[str, Any] = None
     dpop_jkt: str = None
+    user_code: str = None
+    approve: bool = None
+
+    # Special params
+    additional_error_fields: dict[str, Any] = None
 
     # Global class level params setting up by library
     issuer: str = None
@@ -232,6 +237,9 @@ class Request:
         "claims"
         # DPoP verification for code binding
         "dpop_jkt"
+        # Local extensions
+        "user_code",
+        "approve"
     )
     __error_params = {
         "request_uri": "request_uri_not_supported",
@@ -253,7 +261,7 @@ class Request:
 
     def __init__(self, query: QueryParams, body_params: QueryParams | None,
                  db: AsyncSession, request: FastAPIRequest):
-        from validators.request import ClientRepresentation, UserRepresentation
+        from .validators.request import ClientRepresentation, UserRepresentation
         self.client: ClientRepresentation | None = None
         self.user: UserRepresentation | None = None
         self.expires_in: int | None = None
@@ -273,6 +281,7 @@ class Request:
         self._is_scope_identical = True
         self._in_cookie_refresh = False
         self._used_auth_schemes = []
+        self._client_credentials_validated = False
         if hasattr(self, "response_type"):
             self.response_type = normalize_response_type(self.response_type)
         self._store = {}
@@ -330,6 +339,7 @@ class Request:
 
     @property
     def client_credentials_post(self) -> tuple[str | None, str | None]:
+        self.validate_client_credentials()
         if self.client_secret is not None:
             return self.client_id, self.client_secret
         return None, None
@@ -337,6 +347,7 @@ class Request:
     @property
     def client_credentials_basic(self) -> tuple[str | None, str | None]:
         from .errors import InvalidRequestError
+        self.validate_client_credentials()
         if self._basic_client_id is not None or self._basic_client_secret is not None:
             return self._basic_client_id, self._basic_client_secret
         header = self.request.headers.get("Authorization")
@@ -362,6 +373,9 @@ class Request:
 
     def validate_client_credentials(self):
         from .errors import InvalidRequestError
+        if self._client_credentials_validated:
+            return
+        self._client_credentials_validated = True
         auth_header_count = len(self.headers.getlist("Authorization"))
         if auth_header_count > 1:
             raise InvalidRequestError(description='Multiple auth headers used', request=self)
@@ -373,6 +387,10 @@ class Request:
             if basic_id != self.client_id:
                 raise InvalidRequestError(description='Duplicate "client_id" param', request=self)
         self.client_id = self.client_id or post_id or basic_id
+
+    def has_credentials(self) -> bool:
+        self.validate_client_credentials()
+        return self.client_secret is not None or self._basic_client_secret is not None
 
     def clear_client_credentials(self):
         self.client_secret = None
@@ -388,22 +406,32 @@ class Request:
 
         Mechanism, that extracting session information by bearer token
         and place it in *request.auth* (Session representation) and in *request.user* (User or Client representation)
-        placed in *authentication* package and worked by middleware for FastAPI.
+        placed in *authentication* package.
         """
-        from authentication.middleware import EndUser
+        from authentication.security import EndUser
         from .validators import UserRepresentation
         try:
             user = self.request.user
-            if isinstance(user, EndUser) and user.provider_user:
+            if isinstance(user, EndUser) and user.via_provider:
                 return UserRepresentation.from_user(user)
             return None
         except Exception:
             return None
 
+    def set_user(self):
+        from authentication.security import EndUser
+        from .validators import UserRepresentation
+        try:
+            user = self.request.user
+            if isinstance(user, EndUser):
+                self.user = UserRepresentation.from_user(user)
+        except Exception:
+            pass
+
     def __extract_params(self, query: QueryParams, body_params: QueryParams | None):
         from .errors import raise_from_error
         for param, error in self.__error_params.items():
-            if param in query or param in body_params:
+            if param in query or (body_params is not None and param in body_params):
                 raise_from_error(error)
         for param in self.__allowed_params:
             if self._has_query and param in query and len(query[param]) > 0:

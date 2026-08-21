@@ -70,17 +70,11 @@ class FunctionSettings(BaseModel):
     Default: 30 mins
     Min/Max: 5/1440 mins
     """
-    require_secure: bool = True
-    """
-    Require or not secure transport for provider endpoints and refresh_cookie.
-
-    Default: True
-    """
-    login_attempt_count: int = Field(default=5, ge=0, le=30)
+    login_attempt_count: int = Field(default=-3, ge=-30, le=30)
     """
     User account steal protection.
 
-    User attempts to provide right login/password pair before account will be blocked.
+    User attempts to provide right login/password pair before account will be blocked (if positive) or temp blocked for 12 hours (if negative).
     (User can't login in block account, all sessions will be closed)
     Don't forget implement unblock method.
 
@@ -88,8 +82,8 @@ class FunctionSettings(BaseModel):
 
     For disable set value 0.
 
-    Default: 5 attempts
-    Min/Max: 0/30 attempts
+    Default: -3 attempts
+    Min/Max: -30/30 attempts
     """
     # Wrong password attempts on protected routes before block account. If 0 protection disabled.
     reauthenticate_attempt_count: int = Field(default=0, ge=0, le=30)
@@ -312,9 +306,9 @@ class FunctionSettings(BaseModel):
     Default: None
     """
 
-    @field_validator('user_field_options', mode='after')
+    @field_validator('user_login_options', mode='after')
     @classmethod
-    def validate_user_field_options(cls, value: list[str]) -> list[str]:
+    def validate_user_login_options(cls, value: list[str]) -> list[str]:
         def options_filter(item: str):
             if not isinstance(item, str):
                 return False
@@ -323,6 +317,8 @@ class FunctionSettings(BaseModel):
             return False
 
         value = list(filter(options_filter, value))
+        if len(value) == 0:
+            value.append('login')
         return value
 
 
@@ -361,6 +357,12 @@ class Settings(BaseSettings):
     """
     Issuer is URL of provider. Used for validation id_token, provider metadata
     """
+    require_secure: bool = True
+    """
+    Require that all provider endpoints will be http scheme.
+    
+    Default: True
+    """
     opt_path: Path = "."
     """
     Path to location for work files and sync files creation
@@ -398,12 +400,14 @@ class Settings(BaseSettings):
     def validate_base_settings(self):
         import os
         from filelock import FileLock
-        from oauth2lib.common import generate_token, is_secure_required
+        from oauth2lib.common import generate_token, is_secure_required, allow_insecure_provider
         from oauth2lib.validators.uri import absolute_URI_compiled
         from cryptography.hazmat.primitives.asymmetric import rsa, ec
         from cryptography.hazmat.primitives.serialization import load_pem_private_key
         from cryptography.hazmat.primitives.serialization import (Encoding, PrivateFormat,
                                                                   NoEncryption, BestAvailableEncryption)
+        if not self.require_secure:
+            allow_insecure_provider()
         # Validate issuer
         components = absolute_URI_compiled.fullmatch(self.issuer)
         if components is None:
@@ -420,7 +424,7 @@ class Settings(BaseSettings):
             os.makedirs(self.opt_path.as_posix(), exist_ok=True)
         # Validate mode
         if self.mode is None:
-            self.mode = "HMAC"
+            object.__setattr__(self, "mode", "HMAC")
         # Validate secret
         if self.mode == "HMAC":
             if self.secret is None:
@@ -429,9 +433,9 @@ class Settings(BaseSettings):
                 with lock:
                     if os.path.exists(path):
                         with open(path, "rt") as f:
-                            self.secret = f.read().strip()
+                            object.__setattr__(self, "secret", f.read().strip())
                     else:
-                        self.secret = generate_token(64)
+                        object.__setattr__(self, "secret", generate_token(64))
                         with open(path, "wt") as f:
                             f.write(self.secret)
         elif self.mode == "RSA":
@@ -544,12 +548,6 @@ class FunctionParamsObject(TypedDict, total=False):
     
     Default: 30 mins
     Min/Max: 5/1440 mins
-    """
-    require_secure: bool
-    """
-    Require or not secure transport for provider endpoints and refresh_cookie.
-    
-    Default: True
     """
     login_attempt_count: int
     """

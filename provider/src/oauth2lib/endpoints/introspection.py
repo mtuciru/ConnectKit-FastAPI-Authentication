@@ -9,8 +9,7 @@ __all__ = ["IntrospectEndpoint"]
 
 class IntrospectEndpoint(BaseEndpoint):
     def __init__(self, request_validator: RequestValidator):
-        BaseEndpoint.__init__(self)
-        self.request_validator = request_validator
+        BaseEndpoint.__init__(self, request_validator)
 
     @endpoint
     async def create_introspect_response(self, request: Request):
@@ -23,7 +22,7 @@ class IntrospectEndpoint(BaseEndpoint):
             await self.validate_introspect_request(request)
             claims = await aw(self.request_validator.introspect_token(request))
         except errors.OAuth2Error as e:
-            headers.update(e.headers(["Basic", "Bearer", "DPoP"], request.used_auth_schemes))
+            headers.update(e.headers(["Basic"], request.used_auth_schemes))
             headers.update(await self._create_cors_headers(request))
             return headers, e.json, e.status_code
 
@@ -35,11 +34,10 @@ class IntrospectEndpoint(BaseEndpoint):
 
     async def validate_introspect_request(self, request: Request):
         self._raise_on_bad_post_request(request)
-        self._raise_on_missing_token(request)
+        self._raise_on_invalid_token_param(request)
 
         if await aw(self.request_validator.client_authentication_required(request)):
             # Check that single auth scheme used, validate match basic client_id and parameter client_id
-            request.validate_client_credentials()
             request.client = await aw(self.request_validator.authenticate_client(request))
             if request.client is None:
                 raise errors.InvalidClientError(request=request)

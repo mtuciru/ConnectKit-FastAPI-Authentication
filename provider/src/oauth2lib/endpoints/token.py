@@ -1,13 +1,15 @@
 from .base import BaseEndpoint, endpoint
 from ..common import Request
 from ..grant_types.base import GrantTypeBase
+from ..validators import RequestValidator
 
 __all__ = ["TokenEndpoint"]
 
 
 class TokenEndpoint(BaseEndpoint):
-    def __init__(self, default_grant_type: str, grant_types: dict[str, GrantTypeBase]):
-        BaseEndpoint.__init__(self)
+    def __init__(self, request_validator: RequestValidator, default_grant_type: str,
+                 grant_types: dict[str, GrantTypeBase]):
+        BaseEndpoint.__init__(self, request_validator)
         self._grant_types = grant_types
         self._default_grant_type = default_grant_type
 

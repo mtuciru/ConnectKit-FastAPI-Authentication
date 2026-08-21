@@ -19,12 +19,25 @@ import json_adapter as json
 
 os.environ["DB_ADAPTER"] = "sqlite"
 os.environ["DB_NAME"] = ":memory:"
+os.environ["AUTH_ISSUER"] = "http://localhost:8000"
+os.environ["AUTH_REQUIRE_SECURE"] = "FALSE"
 
 from oauth2lib.errors.specs import OAuth2Error
-# from authentication import setup_app
+from authentication import setup_as_resource, setup_as_provider
 from database import async_init_default_base, Base
 
 app = FastAPI()
+
+setup_as_provider(app, {
+    "authorization_code_enable": True,
+    "authorization_implicit_enable": True,
+    "oidc_enable": True,
+    "authorization_device_enable": True,
+    "device_verification_uri": lambda r: "https://fake.example.com/url",
+    "client_credentials_enable": True,
+    "revocation_enable": True,
+    "introspection_enable": True,
+})
 
 
 async def startup():

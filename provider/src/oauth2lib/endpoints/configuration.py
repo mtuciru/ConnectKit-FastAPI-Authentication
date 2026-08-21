@@ -3,7 +3,8 @@ from typing import Any, Mapping, TypedDict, Callable, Coroutine
 
 from .authorization import AuthorizationEndpoint
 from .device_authorization import DeviceAuthorizationEndpoint
-from .introspect import IntrospectEndpoint
+from .device_verification import DeviceVerificationEndpoint
+from .introspection import IntrospectEndpoint
 from .metadata import MetadataEndpoint, MetadataFieldsObject
 from .revocation import RevocationEndpoint
 from .token import TokenEndpoint
@@ -125,6 +126,7 @@ class EndpointsObject(TypedDict, total=False):
     authorization: AuthorizationEndpoint
     token: TokenEndpoint
     device_authorization: DeviceAuthorizationEndpoint
+    device_verification: DeviceVerificationEndpoint
     revocation: RevocationEndpoint
     introspection: IntrospectEndpoint
     userinfo: UserInfoEndpoint
@@ -145,10 +147,20 @@ def configure_endpoints(request_validator: RequestValidator,
     g_device_code = None
     # Init cookie_name for refresh_token
     Request.issuer = metadata_fields.get("issuer", "")
+    # Complete authorization endpoint with hostname
+    auth_path: str = metadata_fields.get("authorization_endpoint")
+    if auth_path is not None:
+        iss = Request.issuer
+        if not iss.endswith("/"):
+            iss += "/"
+        if auth_path.startswith("/"):
+            auth_path = auth_path.lstrip("/")
+        auth_path = iss + auth_path
+        metadata_fields["authorization_endpoint"] = auth_path
     Request.cookie_name = "__" + urlsafe_b64encode(Request.issuer.encode("utf-8")).decode("utf-8").strip("=")
     # MetadataEndpoint enabled always
     # Create metadata early then all because it's validate metadata_fields
-    endpoints["metadata"] = MetadataEndpoint(metadata_fields, options)
+    endpoints["metadata"] = MetadataEndpoint(request_validator, metadata_fields, options)
     # Create enabled grants
     if options.authorization_code_enable:
         g_authorization_code = AuthorizationCodeGrant(request_validator)
@@ -185,12 +197,15 @@ def configure_endpoints(request_validator: RequestValidator,
             response_types['id_token token'] = g_implicit
     if len(response_types) > 0:
         endpoints["authorization"] = AuthorizationEndpoint(
+            request_validator,
             default_response_type="none",
             response_types=response_types
         )
     # DeviceAuthorizationEndpoint
     if options.authorization_device_enable:
-        endpoints["device_authorization"] = DeviceAuthorizationEndpoint(device_code_grant=g_device_code)
+        endpoints["device_authorization"] = DeviceAuthorizationEndpoint(request_validator,
+                                                                        device_code_grant=g_device_code)
+        endpoints["device_verification"] = DeviceVerificationEndpoint(request_validator)
     # TokenEndpoint
     grant_types: dict[str, Any] = {
         "password": password_credentials,
@@ -203,6 +218,7 @@ def configure_endpoints(request_validator: RequestValidator,
     if options.authorization_device_enable:
         grant_types["urn:ietf:params:oauth:grant-type:device_code"] = g_device_code
     endpoints["token"] = TokenEndpoint(
+        request_validator,
         default_grant_type="authorization_code" if "authorization_code" in grant_types else "password",
         grant_types=grant_types
     )

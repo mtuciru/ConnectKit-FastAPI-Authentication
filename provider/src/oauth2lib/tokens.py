@@ -54,7 +54,7 @@ class TokenWithScopes(dict):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         if "scope" in self:
-            self._scopes = self["scope"].split() if "scope" is not None else []
+            self._scopes = self["scope"].split() if self["scope"] is not None else []
         else:
             self._scopes = []
 
@@ -377,12 +377,10 @@ def remove_old_keys(kids: list[str] = None):
     global _jwks, _public_keys_at, _public_keys, _actual_asymmetric_kid
     if kids is None:
         kids = set(_public_keys.keys())
-        kids.remove(_actual_asymmetric_kid)
     else:
         kids = set(kids)
+    kids.remove(_actual_asymmetric_kid)
     for kid in kids:
-        if kid == _actual_asymmetric_kid:
-            continue
         if kid in _public_keys:
             _public_keys.pop(kid)
             _public_keys_at.pop(kid)

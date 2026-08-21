@@ -44,6 +44,10 @@ class OAuth2Error(Exception):
             if state is None:
                 self.state = request.state
             self.used_auth_schemes = request.used_auth_schemes
+            if request.additional_error_fields is not None:
+                self.additional_error_fields = request.additional_error_fields
+            else:
+                self.additional_error_fields = {}
         else:
             self.redirect_uri = None
             self.client_id = None
@@ -64,6 +68,10 @@ class OAuth2Error(Exception):
             if self.state is None:
                 self.state = request.state
             self.used_auth_schemes = request.used_auth_schemes
+            if request.additional_error_fields is not None:
+                self.additional_error_fields = request.additional_error_fields
+            else:
+                self.additional_error_fields = {}
         else:
             self.redirect_uri = None
             self.client_id = None
@@ -94,13 +102,21 @@ class OAuth2Error(Exception):
         return (
             '<html><head><title>Authorization result form</title></head>'
             '<body onload="javascript:document.forms[0].submit()">'
-            f'<form method="post" action="{uri}">{inputs}</form>'
-            f'</body></html>'
+            f'<form method="POST" action="{uri}">{inputs}</form>'
+            '</body></html>'
         )
 
     @property
     def aslist(self):
+        additional = self.additional_error_fields.copy()
+        additional.pop("error", None)
+        additional.pop("iss", None)
+        additional.pop("state", None)
+        additional.pop("error_description", None)
+        additional.pop("error_uri", None)
         error = [('error', self.error)]
+        for key, value in self.additional_error_fields.items():
+            error.append((key, value))
         if self.iss:
             error.append(('iss', Request.issuer))
         if self.description:
@@ -113,9 +129,16 @@ class OAuth2Error(Exception):
 
     @property
     def asdict(self):
+        additional = self.additional_error_fields.copy()
+        additional.pop("error", None)
+        additional.pop("iss", None)
+        additional.pop("state", None)
+        additional.pop("error_description", None)
+        additional.pop("error_uri", None)
         error = {
             "error": self.error,
         }
+        error.update(additional)
         if self.iss:
             error['iss'] = self.iss
         if self.description:
@@ -151,7 +174,7 @@ class OAuth2Error(Exception):
         if getattr(self, "acr_values", None) is not None:
             auth_values.append(f'acr_values="{" ".join(getattr(self, "acr_values"))}"')
         if getattr(self, "max_age", None) is not None:
-            auth_values.append(f'max_age="{getattr(self, "max_age")}"')
+            auth_values.append(f'max_age="{str(getattr(self, "max_age"))}"')
         return ", ".join(auth_values)
 
     def headers(self, schemes: list[str], used_schemes: list[str]):

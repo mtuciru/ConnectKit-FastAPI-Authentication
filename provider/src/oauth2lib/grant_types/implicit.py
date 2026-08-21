@@ -107,6 +107,7 @@ class ImplicitGrant(GrantTypeBase):
     """
 
     response_types = ['token', 'id_token', 'id_token token']
+    grant_type = "implicit"
     refresh_token = False
 
     def __init__(self, request_validator: RequestValidator = None):
@@ -155,10 +156,12 @@ class ImplicitGrant(GrantTypeBase):
         # In first step we must validate client_id and redirect_uri.
         # if these parameters are valid, we can raise only normal errors.
 
+        if not return_result and request.store.get("from_validate_authorization_request", False):
+            # Skip unnecessary validation
+            return None
+
         # Duplicate parameters are always considered as invalid request.
-        for param in ('client_id', 'redirect_uri'):
-            if param in request.duplicate_params:
-                raise errors.InvalidRequestFatalError(description=f'Duplicate "{param}" parameter.', request=request)
+        self._validate_duplicate_params(request, ('client_id', 'redirect_uri'), True)
 
         if request.client_id is None:
             raise errors.MissingClientIdError(request=request)
@@ -170,35 +173,36 @@ class ImplicitGrant(GrantTypeBase):
 
         await self._validate_redirects(request)
 
-        # Now client_id & redirect_uri are valid, other errors will be normal
+        # Now client_id & redirect_uri are valid, other errors will be returned to client
 
         # Now check other duplicate parameters
-        # (Error will be returned to client)
-        for param in ('response_type', 'scope', 'state'):
-            if param in request.duplicate_params:
-                raise errors.InvalidRequestError(description=f'Duplicate "{param}" parameter.', request=request)
+        self._validate_duplicate_params(request, ('response_type', 'response_mode', 'scope', 'state'))
 
         await self._validate_response_type(request)
         await self._is_allowed_response_type(request)
         await self._validate_scopes(request)
 
         if return_result:
-            if request.user is not None:
-                # This information send to frontend for displaying information for user (for consent operation, if required)
-                request_info = {
-                    "client_id": request.client_id,
-                    "display_name": request.client.display_name,
-                    "requested_scopes": request.scopes,
-                    "default_scopes": await aw(self.request_validator.get_default_scopes(request)),
-                    "options": await aw(self.request_validator.get_client_options(request)),
-                }
-            else:
-                # This basic information send to frontend if user not authenticated.
-                request_info = {
-                    "client_id": request.client_id,
-                    "display_name": request.client.display_name
-                }
+            request_info = {
+                'oidc': False,
+                "client_id": request.client_id,
+                "display_name": request.client.display_name,
+                "scopes": request.scopes,
+                "options": await aw(self.request_validator.get_client_options(request)),
+            }
+
             request_info.update(await self.oidc_authorization_validator(request))
+
+            # One-round optimisation
+            # Instead of return validation info we call 'create_authorization_response'
+            # and return complete authorization response.
+            # It's worked because 'none' prompt disable user interaction,
+            # so we don't need to do two requests to provider.
+            prompt = request_info.get("prompt")
+            if prompt is not None and "none" in prompt:
+                request.store["from_validate_authorization_request"] = True
+                return await self.create_authorization_response(request)
+
             return self._prepare_validation_response(request_info)
         await self.oidc_authorization_validator(request, return_result=False)
         return None

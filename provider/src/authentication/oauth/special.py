@@ -1,18 +1,11 @@
-class OAuthFrontendClient:
-    id = None
-    display_name = "Frontend"
-    client_id = "frontend"
-    client_secret = None
-    enabled = True
-    confidential = False
-    for_user_id = None
-    grant_type = "password"
-    allow_credentials_grant = False
-    allow_refresh_grant = True
-    required_scopes = []
-    redirect_uris = []
-    system_client = True
-    access_lifetime = None
-    refresh_lifetime_short = None
-    refresh_lifetime_long = None
-    password_confirm_lifetime = None
+frontend_client_id = "special_frontend_client"
+frontend_params = {
+    "id": None,
+    "display_name": "Frontend",
+    "client_id": frontend_client_id,
+    "confidential": False,
+    "grant_type": "password",
+    "emit_refresh_token": True,
+    "rotate_refresh_token": True,
+    "transparent": True,
+}

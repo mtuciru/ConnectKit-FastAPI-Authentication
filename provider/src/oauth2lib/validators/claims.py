@@ -21,9 +21,9 @@ from .uri import URI_compiled
 from .locale import is_language_tag
 import json_adapter as json
 
-__all__ = ["claims_validate", "get_userinfo_claim", "get_id_token_claim",
+__all__ = ["claims_validate", "get_userinfo_claim", "get_id_token_claim", "set_claims_auth_time_essential",
            "get_claims_sub_value", "get_claims_acr_values", "is_claims_acr_essential", "is_claims_auth_time_essential",
-           "is_email", "normalize_email", "is_phone_number", "normalize_phone_number"]
+           "is_email", "normalize_email", "is_phone_number", "normalize_phone_number", "is_login"]
 
 # time-zone-initial = ALPHA / "." / "_"
 _time_zone_initial = rf"[a-zA-Z._]"
@@ -81,6 +81,8 @@ _address_valid_keys = frozenset({
     "country"
 })
 
+_login_rule = re.compile("^[a-zA-Z][-_a-zA-Z0-9]{2,31}$")
+
 
 def _is_str(value: Any) -> bool:
     return isinstance(value, str)
@@ -109,6 +111,13 @@ def _is_timezone(value: Any) -> bool:
     return _timezone_pattern.fullmatch(value) is not None
 
 
+def is_login(login: str) -> bool:
+    match = _login_rule.fullmatch(login)
+    if match is None:
+        raise False
+    return True
+
+
 def is_email(value: Any) -> bool:
     from email_validator import validate_email, EmailNotValidError
     try:
@@ -118,10 +127,10 @@ def is_email(value: Any) -> bool:
         return False
 
 
-def normalize_email(value: str) -> str:
+def normalize_email(value: str, check_deliverability: bool = False) -> str:
     from email_validator import validate_email, EmailNotValidError
     try:
-        _email_info = validate_email(value, check_deliverability=False)
+        _email_info = validate_email(value, check_deliverability=check_deliverability)
         return _email_info.normalized
     except EmailNotValidError:
         return value
@@ -208,6 +217,9 @@ def _claims_arm_validate(arm: str, claims: dict[str, Any]):
                 "essential": False
             }
             continue
+        norm_key = key
+        if "#" in key:
+            norm_key = key.split("#", maxsplit=2)[0]
         value = claims[key]
         has_value = False
         if "essential" in value and not isinstance(value["essential"], bool):
@@ -217,7 +229,7 @@ def _claims_arm_validate(arm: str, claims: dict[str, Any]):
             value["essential"] = False
         if "value" in value:
             has_value = True
-            if not _validate_claim_value(key, value["value"]):
+            if not _validate_claim_value(norm_key, value["value"]):
                 msg = f"Malformed claims parameter '{arm}.{key}.value'"
                 raise errors.InvalidRequestError(description=msg, uri=_uri)
         if "values" in value:
@@ -231,7 +243,7 @@ def _claims_arm_validate(arm: str, claims: dict[str, Any]):
                 msg = f"Malformed claims parameter '{arm}.{key}.values'"
                 raise errors.InvalidRequestError(description=msg, uri=_uri)
             for v in value["values"]:
-                if not _validate_claim_value(key, v):
+                if not _validate_claim_value(norm_key, v):
                     msg = f"Malformed claims parameter '{arm}.{key}.values'"
                     raise errors.InvalidRequestError(description=msg, uri=_uri)
     if "email" in claims:
@@ -319,6 +331,23 @@ def is_claims_auth_time_essential(request: Request) -> bool:
     if claims["id_token"].get("auth_time") is None:
         return False
     return claims["id_token"]["auth_time"]["essential"]
+
+
+def set_claims_auth_time_essential(request: Request) -> None:
+    if request.max_age is None:
+        return
+    claims: dict[str, Any] = request.claims
+    if claims is None:
+        claims = {}
+        request.claims = claims
+    if claims.get("id_token") is None:
+        claims["id_token"] = {}
+    if claims["id_token"].get("auth_time") is None:
+        claims["id_token"]["auth_time"] = {
+            "essential": True,
+        }
+    else:
+        claims["id_token"]["auth_time"]["essential"] = True
 
 
 def get_id_token_claim(request: Request, key: str) -> dict | None:

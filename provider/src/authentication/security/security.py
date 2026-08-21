@@ -13,7 +13,7 @@ from oauth2lib.tokens import dpop_present, dpop_validate, dpop_ath_create
 from .containers import *
 from .handler import ExceptionContainer
 from .. import models
-from ..control.hooks import get_nonce_by_key, validate_jti, check_required_scopes, check_required_acr
+from ..control.hooks import get_nonce_by_key_hook, validate_jti_hook, check_required_scopes, check_required_acr
 from ..oauth.fingerprint import create_fingerprint
 from ..oauth.tokens import decode_token
 from oauth2lib.endpoints.metadata import well_known_oauth, well_known_oidc
@@ -121,12 +121,12 @@ class CustomOAuth2Security(OpenIdConnect):
             if not dpop_present(connection):
                 raise errors.InvalidDPoPProof()
             # Get current dpop nonce value bound to access_token_jti
-            bound_nonce = await get_nonce_by_key(access_token_jti)
+            bound_nonce = await get_nonce_by_key_hook(access_token_jti)
             # Validate DPoP token, error may be raised
             _, dpop_iat, dpop_jti = dpop_validate(connection, bound_nonce,
                                                   str(session.dpop_jkt), dpop_ath_create(access_token))
             # Check that this DPoP already used in time window
-            if not await validate_jti(dpop_jti, now):
+            if not await validate_jti_hook(dpop_jti, now):
                 raise errors.InvalidDPoPProof()
         else:
             # This session don't use DPoP tokens
@@ -478,7 +478,8 @@ class AuthenticatedUserDependency:
             # Allow if diff between last auth and now less than max_age (in seconds or timedelta), None for disable
             max_age: int | timedelta | None = None,
             # Required ACR level
-            required_acr: list[str] | str | None = None
+            required_acr: list[str] | str | None = None,
+            via_provider_required: bool = False,
     ):
         self._active = active
         if max_age is not None and not isinstance(max_age, timedelta):
@@ -489,6 +490,7 @@ class AuthenticatedUserDependency:
             self._required_acr_values = [required_acr]
         else:
             self._required_acr_values = required_acr
+        self._via_provider_required = via_provider_required
 
     async def __call__(
             self,
@@ -527,6 +529,16 @@ class AuthenticatedUserDependency:
                     websocket_status=3003,
                     use_detail=True
                 )
+        if self._via_provider_required:
+            if not user.via_provider:
+                raise ExceptionContainer(
+                    error=errors.AccessDeniedError(),
+                    schemes=[],
+                    used_schemes=[],
+                    protocol=connection.scope.get("auth_websocket_protocol"),
+                    websocket_status=3003,
+                    use_detail=True
+                )
         if self._max_age is not None:
             now = datetime.now(tz=timezone.utc)
             diff = now - credentials.reauthenticated_at
@@ -543,7 +555,7 @@ class AuthenticatedUserDependency:
                     use_detail=True
                 )
         if self._required_acr_values is not None:
-            if not check_required_acr(credentials.amr, self._required_acr_values):
+            if not check_required_acr(credentials, self._required_acr_values):
                 raise ExceptionContainer(
                     error=errors.InsufficientUserAuthentication(
                         max_age=int(self._max_age.total_seconds()) if self._max_age is not None else None,
@@ -577,9 +589,10 @@ class MaybeAuthenticatedUserDependency(AuthenticatedUserDependency):
             # Allow if diff between last auth and now less than max_age (in seconds or timedelta), None for disable
             max_age: int | timedelta | None = None,
             # Required ACR level
-            required_acr: list[str] | str | None = None
+            required_acr: list[str] | str | None = None,
+            via_provider_required: bool = False
     ):
-        super().__init__(active, max_age, required_acr)
+        super().__init__(active, max_age, required_acr, via_provider_required)
 
     async def __call__(
             self,

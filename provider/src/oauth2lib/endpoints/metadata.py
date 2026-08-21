@@ -8,6 +8,7 @@ from ..common import Request, is_secure_required
 from ..tokens import claims_signing, get_actual_kid
 from ..validators.locale import is_language_tag
 from ..validators.uri import is_scheme, is_uri
+from ..validators import RequestValidator
 
 __all__ = ["MetadataEndpoint", "MetadataFieldsObject", "well_known_oauth", "well_known_oidc"]
 
@@ -107,7 +108,11 @@ _metadata_template: dict[str, Any] = {
     # DPoP signing algorithms supported
     "dpop_signing_alg_values_supported": ["RS256", "PS256", "ES256"],
     # 'iss' parameter returned in all answers from server
-    "authorization_response_iss_parameter_supported": True
+    "authorization_response_iss_parameter_supported": True,
+    # https://datatracker.ietf.org/doc/html/rfc9470
+    "acr_values_supported": None,
+    # Basically /api/oauth/userinfo endpoint (derived by first call to metadata endpoint)
+    "userinfo_endpoint": None,
 }
 
 # Optional provider documentation fields
@@ -128,27 +133,23 @@ _optional_device_authorization_fields = {
 _optional_revocation_fields = {
     # Basically /api/oauth/revoke endpoint (derived by first call to metadata endpoint)
     "revocation_endpoint": None,
-    "revocation_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "none",
-                                                   "client_credentials_grant"]
+    "revocation_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "none"]
 }
 
 # Fields used for introspection if enabled
 _optional_introspection_fields = {
     # Basically /api/oauth/introspect endpoint (derived by first call to metadata endpoint)
     "introspection_endpoint": None,
-    "introspection_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "none",
-                                                      "client_credentials_grant"]
+    "introspection_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "none"]
 }
 
 # Fields used for OIDC if enabled
 _optional_oidc_fields = {
-    # Basically /api/oauth/userinfo endpoint (derived by first call to metadata endpoint)
-    "userinfo_endpoint": None,
+
     "scopes_supported": ["openid"],
-    "acr_values_supported": None,
     "subject_types_supported": ["public", "pairwise"],
     "id_token_signing_alg_values_supported": ["RS256"],
-    "userinfo_signing_alg_values_supported": ["none", "RS256"],
+    "userinfo_signing_alg_values_supported": ["RS256"],
     "display_values_supported": None,
     "claim_types_supported": ["normal"],
     "claims_supported": None,
@@ -188,8 +189,8 @@ _save_none_fields = (
 
 
 class MetadataEndpoint(BaseEndpoint):
-    def __init__(self, fields: MetadataFieldsObject, options: dict[str, Any]):
-        BaseEndpoint.__init__(self)
+    def __init__(self, request_validator: RequestValidator, fields: MetadataFieldsObject, options: dict[str, Any]):
+        BaseEndpoint.__init__(self, request_validator)
         self._options = MetadataOptions(options or {})
         if fields is None:
             raise ValueError("`fields` cannot be None")
@@ -202,7 +203,7 @@ class MetadataEndpoint(BaseEndpoint):
         self._metadata_signed_key = None
 
     @endpoint
-    def create_oauth_metadata_response(self, request: Request):
+    async def create_oauth_metadata_response(self, request: Request):
         if "Origin" in request.headers:
             headers = {
                 'Content-Type': 'application/json',
@@ -220,7 +221,7 @@ class MetadataEndpoint(BaseEndpoint):
         return headers, json.dumps(self._oauth_metadata), 200
 
     @endpoint
-    def create_oidc_metadata_response(self, request: Request):
+    async def create_oidc_metadata_response(self, request: Request):
         if "Origin" in request.headers:
             headers = {
                 'Content-Type': 'application/json',
@@ -355,8 +356,8 @@ class MetadataEndpoint(BaseEndpoint):
         for key, field_value in fields.items():
             if key in oauth_template:
                 oauth_template[key] = field_value
-        self._validate_oauth_metadata(oauth_template)
         self._remove_none_fields(oauth_template)
+        self._validate_oauth_metadata(oauth_template)
         # OIDC Metadata (extended version of OAuth metadata)
         oidc_template = deepcopy(oauth_template) if self._options.oidc_enable else None
         if oidc_template is not None:
@@ -365,8 +366,8 @@ class MetadataEndpoint(BaseEndpoint):
             for key, field_value in fields.items():
                 if key in oauth_template:
                     oidc_template[key] = field_value
-            self._validate_oidc_metadata(oidc_template)
             self._remove_none_fields(oidc_template)
+            self._validate_oidc_metadata(oidc_template)
         return oauth_template, oidc_template
 
     def _finalize_metadata(self, request: Request):
@@ -385,9 +386,10 @@ class MetadataEndpoint(BaseEndpoint):
             "jwks_uri": str(rr.url_for(self._options.jwks_endpoint_name)),
             "userinfo_endpoint": str(rr.url_for(self._options.userinfo_endpoint_name))
         }
-        if ("authorization_endpoint" not in self._oauth_metadata
-                or self._oauth_metadata["authorization_endpoint"] is None):
-            uris["authorization_endpoint"] = str(rr.url_for(self._options.authorization_endpoint_name))
+        if self._options.authorization_code_enable or self._options.authorization_implicit_enable:
+            if ("authorization_endpoint" not in self._oauth_metadata
+                    or self._oauth_metadata["authorization_endpoint"] is None):
+                uris["authorization_endpoint"] = str(rr.url_for(self._options.authorization_endpoint_name))
         if self._options.authorization_device_enable:
             uris["device_authorization_endpoint"] = str(rr.url_for(self._options.device_authorization_endpoint_name))
         if self._options.revocation_enable:

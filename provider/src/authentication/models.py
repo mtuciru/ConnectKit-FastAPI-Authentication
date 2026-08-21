@@ -288,7 +288,6 @@ class UserLock(AsyncAttrs, Base):
     # Note: external login disable mfa and reauthenticate methods for session, these allowed only via same external.
     # Note: external login not allowed:
     #   - if End-User not enable this external method.
-    #   - if End-User not set primary email
     #   - if End-User not exists in system (in this case registration flow will be started)
     login_via_external: Mapped[str] = mapped_column(nullable=False, server_default="")
     # login attempts count
@@ -323,6 +322,7 @@ class UserLock(AsyncAttrs, Base):
     # If you realise custom main auth methods, don't forget check block status of user.
     block: Mapped[bool] = mapped_column(nullable=False, server_default="FALSE")
     block_reason: Mapped[str] = mapped_column(nullable=True)
+    deleted: Mapped[bool] = mapped_column(nullable=False, server_default="FALSE")
 
 
 class UserOTP(AsyncAttrs, Base):
@@ -352,6 +352,30 @@ class UserOTP(AsyncAttrs, Base):
     #         self._otp_codes = json.dumps(value)
     #     else:
     #         self._otp_codes = None
+
+
+# -*- Client definitions -*-
+
+class OAuth2SectorIdentifier(AsyncAttrs, Base):
+    """
+    TODO: Add description here
+    """
+    __tablename__ = 'oauth2_sector_identifier'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Basically hostname of client used for pairwise sub calculation
+    # Used instead of extract hostname from redirect_uri
+    # Initial value can be extracted once from registered redirect_uri
+    sector: Mapped[str] = mapped_column(nullable=False, unique=True)
+    sector_salt: Mapped[str] = mapped_column(nullable=False)
+
+
+class OAuth2AZPIdentifier(AsyncAttrs, Base):
+    """
+    TODO: Add description here
+    """
+    __tablename__ = 'oauth2_azp_identifier'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    azp: Mapped[str] = mapped_column(nullable=False, unique=True)
 
 
 class OAuth2Client(AsyncAttrs, Base):
@@ -385,7 +409,7 @@ class OAuth2Client(AsyncAttrs, Base):
     # Space-delimited max scope values that this client can request
     # If client explicit request more scopes than max_scopes, provider may truncate scopes or reject request
     max_scope: Mapped[str] = mapped_column(nullable=True)
-    # Tab-separated list of registered redirect_uris for client (used only for 'authorization_code' and 'implicit')
+    # \n-separated list of registered redirect_uris for client (used only for 'authorization_code' and 'implicit')
     # If contains only one redirect_uri, it is interpreting as default value
     _redirect_uris: Mapped[str] = mapped_column(nullable=True)
     # Special client, if True grant_type must be 'password'
@@ -405,15 +429,20 @@ class OAuth2Client(AsyncAttrs, Base):
     access_ip_bound: Mapped[bool] = mapped_column(nullable=False, server_default="FALSE")
     refresh_ip_bound: Mapped[bool] = mapped_column(nullable=False, server_default="FALSE")
     dpop_bound: Mapped[bool] = mapped_column(nullable=False, server_default="FALSE")
+    # ID of sector for pairwise sub generation
+    # (if not specified, 'public' sub will be used (user.id int value converted to str)
+    pairwise_sector_id: Mapped[int] = mapped_column(ForeignKey("oauth2_sector_identifier.id"), nullable=True)
+    # Authorized party id. ID describe group of logically bound clients (from the same owner for example)
+    azp_id: Mapped[int] = mapped_column(ForeignKey("oauth2_azp_identifier.id"), nullable=True)
     # Enable userinfo settings
     userinfo_as_jwt: Mapped[bool] = mapped_column(nullable=False, server_default="FALSE")
 
     @hybrid_property
     def client_secret(self):
-        return ""
+        return "" if self._client_secret is not None else None
 
     @client_secret.setter
-    def client_secret(self, value):
+    def client_secret(self, value: str):
         self._client_secret = _hasher.hash(value)
 
     @hybrid_property
@@ -443,12 +472,12 @@ class OAuth2Client(AsyncAttrs, Base):
 
     @hybrid_property
     def redirect_uris(self) -> list[str]:
-        lst = self._redirect_uris.split("\t")
+        lst = self._redirect_uris.split("\n")
         return lst
 
     @redirect_uris.setter
     def redirect_uris(self, value: list[str]):
-        self._redirect_uris = "\t".join(value)
+        self._redirect_uris = "\n".join(value)
 
     @hybrid_method
     def verify_client_secret(self, value: str) -> bool:
@@ -460,6 +489,16 @@ class OAuth2Client(AsyncAttrs, Base):
         except Argon2Error:
             return False
 
+
+class OAuth2UserPairwise(AsyncAttrs, Base):
+    __tablename__ = "oauth2_user_pairwise"
+    user_id: Mapped[int] = mapped_column(ForeignKey("oauth2_user.id", ondelete='CASCADE'), primary_key=True)
+    sector_id: Mapped[int] = mapped_column(ForeignKey("oauth2_sector_identifier.id", ondelete='CASCADE'),
+                                           primary_key=True)
+    sub: Mapped[str] = mapped_column(nullable=False, unique=True, index=True)
+
+
+# -*- Session definitions -*-
 
 # Exists three types of session:
 #   - OAuth2ProviderSession
@@ -620,15 +659,15 @@ class OAuth2AccessRevoked(AsyncAttrs, Base):
     expire_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
 
 
-class OAuth2ClientPreviousUsed(AsyncAttrs, Base):
-    """
-    Optional authorization code protection
-    to preventing the use of constant values for the PKCE challenge or OpenID Connect nonce.
-    """
-    __tablename__ = 'oauth2_client_previous_used'
-    client_id: Mapped[int] = mapped_column(ForeignKey("oauth2_client.id", ondelete='CASCADE'), primary_key=True)
-    code_challenge: Mapped[str] = mapped_column(nullable=True)
-    nonce: Mapped[str] = mapped_column(nullable=True)
+# class OAuth2ClientPreviousUsed(AsyncAttrs, Base):
+#     """
+#     Optional authorization code protection
+#     to preventing the use of constant values for the PKCE challenge or OpenID Connect nonce.
+#     """
+#     __tablename__ = 'oauth2_client_previous_used'
+#     client_id: Mapped[int] = mapped_column(ForeignKey("oauth2_client.id", ondelete='CASCADE'), primary_key=True)
+#     code_challenge: Mapped[str] = mapped_column(nullable=True)
+#     nonce: Mapped[str] = mapped_column(nullable=True)
 
 
 class OAuth2Code(AsyncAttrs, Base):
@@ -651,6 +690,7 @@ class OAuth2Code(AsyncAttrs, Base):
     nonce: Mapped[str] = mapped_column(nullable=True)
     # (if it OIDC request and its present in request) serialized JSON
     claims: Mapped[str] = mapped_column(nullable=True)
+    dpop_jkt: Mapped[str] = mapped_column(nullable=True)
     expire_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
 
 
@@ -660,22 +700,25 @@ class OAuth2DeviceCode(AsyncAttrs, Base):
     """
     __tablename__ = 'oauth2_device_code'
     # Device_code will be sent by client to check status
-    device_code: Mapped[str] = mapped_column(primary_key=True)
+    device_code: Mapped[str] = mapped_column(primary_key=True, unique=True)
     # User code end user send to special endpoint to authorized client
-    user_code: Mapped[str] = mapped_column(primary_key=True)
+    user_code: Mapped[str] = mapped_column(primary_key=True, unique=True)
     # If client authorized, it's id will be set
     user_id: Mapped[int] = mapped_column(ForeignKey("oauth2_user.id", ondelete='CASCADE'), nullable=True)
     # Client id, who initiate process
     client_id: Mapped[int] = mapped_column(ForeignKey("oauth2_client.id", ondelete='CASCADE'), nullable=False)
     # Requested scopes
     scope: Mapped[str] = mapped_column(nullable=False)
-    # If user reject code, this set to True (after successful pull with this state, code will be removed)
-    rejected: Mapped[bool] = mapped_column(nullable=False, server_default="FALSE")
+    # If user approve code, this set to True
+    # If user reject code, this set to False
+    # (after pull with this state set, code will be removed)
+    approved: Mapped[bool] = mapped_column(nullable=True)
     # Interval in seconds between pulls
     interval: Mapped[int] = mapped_column(nullable=False)
     last_pull: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False,
                                                 server_default=func.current_timestamp())
     # When code expired
+    # Code don't removed until client pull or after 30 minutes apter expiration
     expire_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), nullable=False)
 
 # class OAuth2ExternalProviders(AsyncAttrs, Base):

@@ -19,8 +19,17 @@ def get_subject_id(request: Request):
     """
     if request.store.get("sub") is not None:
         return request.store["sub"]
-    # TODO: add support for pairwise ids
-    sub = str(request.user.id)
+    if "sector" in request.client:
+        # Pairwise sub enabled, calculate
+        sector: str = request.client.sector
+        sector_salt: str = request.client.sector_salt
+        hasher = new("sha1")
+        hasher.update(sector.encode())
+        hasher.update(str(request.user.id).encode())
+        hasher.update(sector_salt.encode())
+        sub = base64.urlsafe_b64encode(hasher.digest()).decode().strip("=")
+    else:
+        sub = str(request.user.id)
     request.store["sub"] = sub
     return sub
 

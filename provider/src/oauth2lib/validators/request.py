@@ -6,23 +6,55 @@ from ..common import Request
 __all__ = ["RequestValidator", "ClientRepresentation", "UserRepresentation"]
 
 
-class ClientRepresentation:
+class ClientRepresentation(dict):
     client_id: str = None
     display_name: str = None
 
-    def __init__(self, **kwargs):
-        for key, value in kwargs.items():
-            setattr(self, key, value)
+    def __init__(self, *args, **kwargs):
+        data = dict()
+        for d in args:
+            if isinstance(d, dict):
+                data.update(d)
+            else:
+                raise TypeError(f"Expected dict but got {type(d)}")
+        for k, v in kwargs.items():
+            data[k] = v
+        super().__init__(data)
+
+    def __getattr__(self, item):
+        if item in self:
+            return self[item]
+        else:
+            raise AttributeError(f"Attribute {item} not found.")
+
+    def __setattr__(self, key, value):
+        self[key] = value
 
 
-class UserRepresentation:
+class UserRepresentation(dict):
     id: int = None
     login: str = None
     active: bool = None
 
-    def __init__(self, **kwargs):
-        for key, value in kwargs.items():
-            setattr(self, key, value)
+    def __init__(self, *args, **kwargs):
+        data = dict()
+        for d in args:
+            if isinstance(d, dict):
+                data.update(d)
+            else:
+                raise TypeError(f"Expected dict but got {type(d)}")
+        for k, v in kwargs.items():
+            data[k] = v
+        super().__init__(data)
+
+    def __getattr__(self, item):
+        if item in self:
+            return self[item]
+        else:
+            raise AttributeError(f"Attribute {item} not found.")
+
+    def __setattr__(self, key, value):
+        self[key] = value
 
     @classmethod
     def from_user(cls, user):
@@ -61,7 +93,6 @@ class RequestValidator:
             - "client_id": request.client_id,
             - "display_name": request.client.display_name,
             - "requested_scopes": request.scopes,
-            - "default_scopes": self.request_validator.get_default_scopes(request),
             - "options": await self._aw(self.request_validator.get_client_options(request)),
         And if request.user is None:
             - "client_id": request.client_id,
@@ -517,10 +548,15 @@ class RequestValidator:
         """
         This method called to check match current and expected by client user sessions.
 
+        sub_value and 'sub' claim from id_token must be valid plain or pairwise user id.
+        plain or pairwise dependent of client configuration.
+
         if sub_value is presented, validate that current user session matches sub_value,
         Then if request.id_token_hint is presented, also validate that current user session matches id_token_hint.
 
-        Only if both validation success returns True, otherwise returns False.
+        Only if both validation success and point to the same subject returns True, otherwise returns False.
+
+        Also, always set request.login_hint to requested login
 
         sub_value extracted from request.claims.id_token.sub.value if exists, None otherwise.
 
@@ -534,7 +570,7 @@ class RequestValidator:
         This method called to check that current user session required reauthentication.
         This method will be called if request.user presented.
 
-        if prompt value contains 'login' or equal 'none', this method will be called.
+        if prompt value contains 'login' or equal 'none' or max_age and/or arc_values specified, this method will be called.
         If return True, that error 'login_required' or 'interaction_required' will be retuned to client.
 
         prompt='none' means silent authorization process without user interaction,
@@ -553,13 +589,17 @@ class RequestValidator:
         This method called to check that current user session required consent.
         This method will be called if request.user presented.
 
-        if prompt value contains 'consent' or equal 'none', this method will be called.
-        If return True, that error 'consent_required' or 'interaction_required' will be retuned to client.
+        if prompt value contains 'consent' or contains 'select_account' or equal 'none', this method will be called.
+        If return True, that error 'consent_required', 'account_selection_required' or 'interaction_required'
+        will be retuned to client.
 
         prompt='none' means silent authorization process without user interaction,
         so if user interaction required, error will be returned.
 
         prompt='consent' means user must be consent request, but if this method return True, consent is not happen.
+        so error will be returned.
+
+        prompt='select_account' means user must be select account, but if this method return True, account is not selected.
         so error will be returned.
 
         if OAuth2, this method also will be called, for check user consent.
@@ -752,6 +792,8 @@ class RequestValidator:
         """
         raise NotImplementedError('Subclasses must implement this method.')
 
+    # -*- resource & provider processing section -*-
+
     async def get_userinfo_claims(self, request: Request) -> dict[str, Any] | str:
         """
         TODO: rewrite
@@ -794,5 +836,24 @@ class RequestValidator:
 
         Method is used by:
             UserInfoEndpoint
+        """
+        raise NotImplementedError('Subclasses must implement this method.')
+
+    async def get_user_code_info(self, request: Request) -> dict[str, Any] | None:
+        """
+        Called when a user_code is validating
+
+        Must return dict[str, Any] with info about the user code
+        or return None (None value raise AccessDenied error)
+        """
+        raise NotImplementedError('Subclasses must implement this method.')
+
+    async def approve_user_code_info(self, request: Request) -> bool | None:
+        """
+        Called when an EndUser approve (approve is True) or reject (approve is False) user_code.
+
+        Must return bool approve status (True is success approve/reject or already approved/rejected,
+        False is user_code invalid and other non error reasons)
+        or return None (None value raise AccessDenied error)
         """
         raise NotImplementedError('Subclasses must implement this method.')

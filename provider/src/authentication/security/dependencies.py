@@ -15,22 +15,26 @@ def anonymous_user() -> Security:
 def authenticated_user(active: bool | None = True,
                        max_age: int | timedelta | None = None,
                        required_acr: str | list[str] | None = None,
-                       required_scopes: list[str] | None = None) -> Security:
+                       required_scopes: list[str] | None = None,
+                       via_provider_required: bool = False) -> Security:
     return Security(AuthenticatedUserDependency(
         active=active,
         max_age=max_age,
         required_acr=required_acr,
+        via_provider_required=via_provider_required
     ), scopes=required_scopes, use_cache=True)
 
 
 def maybe_authenticated_user(active: bool | None = True,
                              max_age: int | timedelta | None = None,
                              required_acr: str | list[str] | None = None,
-                             required_scopes: list[str] | None = None) -> Security:
+                             required_scopes: list[str] | None = None,
+                             via_provider_required: bool = False) -> Security:
     return Security(MaybeAuthenticatedUserDependency(
         active=active,
         max_age=max_age,
         required_acr=required_acr,
+        via_provider_required=via_provider_required
     ), scopes=required_scopes, use_cache=True)
 
 

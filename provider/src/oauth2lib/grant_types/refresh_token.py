@@ -65,9 +65,7 @@ class RefreshTokenGrant(GrantTypeBase):
 
     async def validate_token_request(self, request: Request):
         # Duplicate parameters are always considered as invalid request.
-        for param in ('grant_type', 'refresh_token', 'scope', 'client_id', 'client_secret'):
-            if param in request.duplicate_params:
-                raise errors.InvalidRequestFatalError(description=f'Duplicate "{param}" parameter.', request=request)
+        self._validate_duplicate_params(request, ('grant_type', 'refresh_token', 'scope', 'client_id', 'client_secret'))
 
         await self._validate_grant_type(request)
 
@@ -76,7 +74,6 @@ class RefreshTokenGrant(GrantTypeBase):
 
         if await aw(self.request_validator.client_authentication_required(request)):
             # Check that single auth scheme used, validate match basic client_id and parameter client_id
-            request.validate_client_credentials()
             request.client = await aw(self.request_validator.authenticate_client(request))
             if request.client is None:
                 raise errors.InvalidClientError(request=request)

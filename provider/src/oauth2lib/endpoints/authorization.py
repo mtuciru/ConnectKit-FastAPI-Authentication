@@ -2,13 +2,15 @@ from .base import BaseEndpoint, endpoint
 from ..common import Request
 from ..grant_types.base import GrantTypeBase
 from .. import errors
+from ..validators import RequestValidator
 
 __all__ = ["AuthorizationEndpoint"]
 
 
 class AuthorizationEndpoint(BaseEndpoint):
-    def __init__(self, default_response_type: str, response_types: dict[str, GrantTypeBase]):
-        BaseEndpoint.__init__(self)
+    def __init__(self, request_validator: RequestValidator, default_response_type: str,
+                 response_types: dict[str, GrantTypeBase]):
+        BaseEndpoint.__init__(self, request_validator)
         self._response_types = response_types
         self._default_response_type = default_response_type
         self.redirect_errors = True
@@ -30,8 +32,12 @@ class AuthorizationEndpoint(BaseEndpoint):
         """Extract response_type and route to the designated grant."""
         # We raise error if POST request contains query component
         self._raise_on_bad_post_request(request)
+        if request.headers.get("Origin") is not None:
+            raise errors.InvalidRequestError(description="CORS is not allowed", request=request)
         # Get authenticated End-User
         request.user = request.user_from_request
+        if request.user is None:
+            raise errors.AccessDeniedError(description="Access Denied", request=request)
         response_type_grant = self.response_types.get(request.response_type, self.default_response_grant)
         return await response_type_grant.create_authorization_response(request)
 
@@ -40,8 +46,12 @@ class AuthorizationEndpoint(BaseEndpoint):
         """Extract response_type and route to the designated grant."""
         # We raise error if POST request contains query component
         self._raise_on_bad_post_request(request)
+        if request.headers.get("Origin") is not None:
+            raise errors.InvalidRequestError(description="CORS is not allowed", request=request)
         # Get authenticated End-User
         request.user = request.user_from_request
+        if request.user is None:
+            raise errors.AccessDeniedError(description="Access Denied", request=request)
         response_type_grant = self.response_types.get(request.response_type, self.default_response_grant)
         try:
             return await response_type_grant.validate_authorization_request(request)

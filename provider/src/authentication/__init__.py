@@ -1,8 +1,8 @@
 from fastapi import FastAPI
 
-from settings import FunctionParamsObject
+from .settings import FunctionParamsObject
 
-__all__ = ["setup_as_provider", "setup_as_resource", "control", "security"]
+__all__ = ["setup_as_provider", "setup_as_resource", "control", "security", "models"]
 
 
 def setup_as_provider(app: FastAPI, config: FunctionParamsObject) -> None:
@@ -19,9 +19,8 @@ def setup_as_provider(app: FastAPI, config: FunctionParamsObject) -> None:
     """
     from .settings import settings, function_settings
     from .routes.config import init_oauth2lib_endpoints
-    from .routes.oauth2 import create_oauth_router
+    from .routes.oauth2 import create_oauth_router, create_metadata_router
     from .routes.frontend import create_frontend_router
-    from .routes.metadata import create_metadata_router
     # First setup as resource
     setup_as_resource(app, config)
     # Init OAuth2 endpoints
@@ -48,13 +47,13 @@ def setup_as_provider(app: FastAPI, config: FunctionParamsObject) -> None:
         "device_verification_uri": function_settings.device_verification_uri,
         "device_complete_uri": function_settings.device_complete_uri,
         "use_signed_metadata": function_settings.use_signed_metadata,
-        "token_endpoint_name": "",
-        "jwks_endpoint_name": "",
-        "authorization_endpoint_name": "authorization_frontend",
-        "device_authorization_endpoint_name": "",
-        "revocation_endpoint_name": "",
-        "introspection_endpoint_name": "",
-        "userinfo_endpoint_name": ""
+        "token_endpoint_name": "oauth_token",
+        "jwks_endpoint_name": "oauth_jwks",
+        "authorization_endpoint_name": "oauth_authorization_start",
+        "device_authorization_endpoint_name": "oauth_device_authorization",
+        "revocation_endpoint_name": "oauth_revoke",
+        "introspection_endpoint_name": "oauth_introspect",
+        "userinfo_endpoint_name": "oauth_userinfo"
     })
     # Create OAuth2 routes
     app.include_router(create_oauth_router(), prefix="/api")
@@ -62,7 +61,11 @@ def setup_as_provider(app: FastAPI, config: FunctionParamsObject) -> None:
     app.include_router(create_metadata_router())
     # If requested, create typical frontend locations
     if function_settings.authorization_endpoint is None:
-        app.include_router(create_frontend_router(), prefix="/provider")
+        # TODO: Method POST not supported for now.
+        #  In future POST method will be create temp URI with saved parameters and redirect to GET method with this URI
+        #  via request_uri parameter (/authorize?client_id=<ID>&request_uri=<URI>).
+        #  Also will be added partial mode with only POST method (and GET method realised by frontend server)
+        app.include_router(create_frontend_router(for_get=True, for_post=False), prefix="/oauth")
 
 
 def setup_as_resource(app: FastAPI, config: FunctionParamsObject) -> None:
@@ -74,10 +77,11 @@ def setup_as_resource(app: FastAPI, config: FunctionParamsObject) -> None:
     Add exception handler for our oauth2 errors
     """
     from .settings import configure
-    from .security.handler import ExceptionContainer, oauth2_exception_handler
+    from .security.handler import ExceptionContainer, oauth2wrap_exception_handler, oauth2_exception_handler
     from .security.security import custom_oauth2_scheme
     from .models import Base
     from database import init_default_base
+    from oauth2lib.errors import OAuth2Error
     # Update inner setting by provided config
     configure(config)
     # Initiate base tables
@@ -85,4 +89,5 @@ def setup_as_resource(app: FastAPI, config: FunctionParamsObject) -> None:
     # configure security model
     custom_oauth2_scheme.configure_openid_connect_url()
     # register oauth2 errors handler
-    app.add_exception_handler(ExceptionContainer, oauth2_exception_handler)
+    app.add_exception_handler(ExceptionContainer, oauth2wrap_exception_handler)
+    app.add_exception_handler(OAuth2Error, oauth2_exception_handler)

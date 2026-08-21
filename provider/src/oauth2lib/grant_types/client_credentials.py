@@ -72,11 +72,8 @@ class ClientCredentialsGrant(GrantTypeBase):
         return await self._prepare_direct_response(request, token)
 
     async def validate_token_request(self, request: Request):
-        for param in ('grant_type', 'scope', 'client_id', 'client_secret'):
-            if param in request.duplicate_params:
-                raise errors.InvalidRequestError(description=f'Duplicate "{param}" parameter.', request=request)
+        self._validate_duplicate_params(request, ('grant_type', 'scope', 'client_id', 'client_secret'))
         await self._validate_grant_type(request)
-        request.validate_client_credentials()
         request.client = await aw(self.request_validator.authenticate_client(request))
         if request.client is None:
             raise errors.InvalidClientError(request=request)

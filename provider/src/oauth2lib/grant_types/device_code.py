@@ -57,13 +57,10 @@ class DeviceCodeGrant(GrantTypeBase):
 
     async def validate_authorization_request(self, request: Request):
         request.grant_type = self.grant_type
-        for param in ("client_id", "scope", "client_secret"):
-            if param in request.duplicate_params:
-                raise errors.InvalidRequestFatalError(description=f'Duplicate "{param}" parameter.', request=request)
+        self._validate_duplicate_params(request, ("client_id", "scope", "client_secret"))
 
         if await aw(self.request_validator.client_authentication_required(request)):
             # Check that single auth scheme used, validate match basic client_id and parameter client_id
-            request.validate_client_credentials()
             request.client = await aw(self.request_validator.authenticate_client(request))
             if request.client is None:
                 raise errors.InvalidClientError(request=request)
@@ -116,9 +113,7 @@ class DeviceCodeGrant(GrantTypeBase):
         return await self._prepare_direct_response(request, token)
 
     async def validate_token_request(self, request: Request):
-        for param in ("grant_type", "device_code", "client_id", "client_secret"):
-            if param in request.duplicate_params:
-                raise errors.InvalidRequestFatalError(description=f'Duplicate "{param}" parameter.', request=request)
+        self._validate_duplicate_params(request, ("grant_type", "device_code", "client_id", "client_secret"))
 
         await self._validate_grant_type(request)
 
@@ -127,7 +122,6 @@ class DeviceCodeGrant(GrantTypeBase):
 
         if await aw(self.request_validator.client_authentication_required(request)):
             # Check that single auth scheme used, validate match basic client_id and parameter client_id
-            request.validate_client_credentials()
             request.client = await aw(self.request_validator.authenticate_client(request))
         else:
             if request.client_id is None:

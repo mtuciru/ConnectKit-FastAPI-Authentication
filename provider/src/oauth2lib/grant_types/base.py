@@ -2,7 +2,7 @@ import base64
 import hashlib
 from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Coroutine, Any
+from typing import Coroutine, Any, Sequence
 
 from json_adapter import dumps
 from .. import errors
@@ -11,7 +11,8 @@ from ..tokens import create_bearer_token, claims_signing
 from ..validators import RequestValidator
 from ..validators.claims import (claims_validate, get_claims_sub_value,
                                  is_claims_acr_essential, is_claims_auth_time_essential,
-                                 is_email, normalize_email, is_phone_number, normalize_phone_number)
+                                 is_email, normalize_email, is_phone_number, normalize_phone_number, is_login,
+                                 set_claims_auth_time_essential)
 from ..validators.locale import parse_language_tags
 from ..validators.uri import is_absolute_uri
 
@@ -61,6 +62,17 @@ class GrantTypeBase:
     async def validate_token_request(self, request: Request):
         raise NotImplementedError('Subclasses must implement this method.')
 
+    @staticmethod
+    def _validate_duplicate_params(request: Request, params: Sequence[str], critical: bool = False):
+        for param in params:
+            if param in request.duplicate_params:
+                if critical:
+                    raise errors.InvalidRequestFatalError(description=f'Duplicate "{param}" parameter.',
+                                                          request=request)
+                else:
+                    raise errors.InvalidRequestError(description=f'Duplicate "{param}" parameter.',
+                                                     request=request)
+
     async def _validate_response_type(self, request: Request):
         if request.response_type is None:
             raise errors.MissingResponseTypeError(request=request)
@@ -85,6 +97,10 @@ class GrantTypeBase:
         if request.scopes is None:
             request.scopes = await aw(self.request_validator.get_default_scopes(request))
             request._is_scope_identical = True
+            if "openid" in request.scopes:
+                # This client registered as OpenID Connect
+                # By specification, scope parameter required
+                raise errors.InvalidRequestError("Missing scope value")
         else:
             old_scopes = set(request.scopes)
             scopes = await aw(self.request_validator.transform_scopes(request))
@@ -126,8 +142,8 @@ class GrantTypeBase:
                 "error": None,
                 "rewrite_html": '<html><head><title>Authorization result form</title></head>'
                                 '<body onload="javascript:document.forms[0].submit()">'
-                                f'<form method="post" action="{request.redirect_uri}">{inputs}</form>'
-                                f'</body></html>'
+                                f'<form method="POST" action="{request.redirect_uri}">{inputs}</form>'
+                                '</body></html>'
             }), 200
 
         raise NotImplementedError('Subclasses must set a valid default_response_mode')
@@ -397,15 +413,32 @@ class GrantTypeBase:
         "claims", validate by claims_validate
 
         """
-        # Ignore this validation if classic OAuth2
         if request.scopes is None or 'openid' not in request.scopes:
-            return {}
+            # It's classic OAuth 2.0
+            # Validate only some OAuth 2.0 extensions (not OIDC)
+            # https://datatracker.ietf.org/doc/html/rfc9470
+            self._validate_duplicate_params(request, ("max_age", "acr_values"))
+            if request.max_age is not None and not isinstance(request.max_age, int):
+                try:
+                    request.max_age = int(request.max_age)
+                except Exception:
+                    msg = "Parameter 'max_age' must be an integer."
+                    raise errors.InvalidRequestError(request=request, description=msg)
+            if request.acr_values is not None and isinstance(request.acr_values, str):
+                request.acr_values = request.acr_values.strip().split()
+            if await aw(self.request_validator.is_user_login_required(request)):
+                return {
+                    "prompt": ["login"]
+                }
+            return {
+                "prompt": []
+            }
 
         # -*- Validate parameters -*-
-        for param in ("nonce", "display", "prompt", "max_age", "ui_locales", "id_token_hint",
-                      "login_hint", "acr_values", "claims_locales", "claims"):
-            if param in request.duplicate_params:
-                raise errors.InvalidRequestError(description=f'Duplicate "{param}" parameter.', request=request)
+        self._validate_duplicate_params(request, (
+            "nonce", "display", "prompt", "max_age", "ui_locales", "id_token_hint",
+            "login_hint", "acr_values", "claims_locales", "claims"
+        ))
 
         if 'id_token' in request.response_type_set and request.nonce is None:
             raise errors.InvalidRequestError(
@@ -415,21 +448,11 @@ class GrantTypeBase:
 
         prompt = request.prompt if request.prompt is not None else set()
         if isinstance(prompt, str):
-            prompt = set(prompt.strip().split())
+            prompt = set(map(lambda x: x.strip(), prompt.strip().split()))
             request.prompt = list(prompt)
-        if 'none' in prompt:
-            if len(prompt) > 1:
-                msg = "Prompt none is mutually exclusive with other values."
-                raise errors.InvalidRequestError(request=request, description=msg)
-            # User must be loaded before grant is called, in endpoint /authorize.
-            # for this used request.user_from_request. if user is None and prompt is none it is error.
-            if request.user is None:
-                raise errors.InteractionRequired(request=request)
-            # 'none' value disable all user interaction, so, if it required, error will be raised.
-            if await aw(self.request_validator.is_user_login_required(request)):
-                raise errors.InteractionRequired(request=request)
-            if await aw(self.request_validator.is_user_consent_required(request)):
-                raise errors.InteractionRequired(request=request)
+
+        if request.acr_values is not None and isinstance(request.acr_values, str):
+            request.acr_values = request.acr_values.strip().split()
 
         if request.max_age is not None and not isinstance(request.max_age, int):
             try:
@@ -437,6 +460,22 @@ class GrantTypeBase:
             except Exception:
                 msg = "Parameter 'max_age' must be an integer."
                 raise errors.InvalidRequestError(request=request, description=msg)
+
+        if request.max_age == 0:
+            if 'none' in prompt:
+                raise errors.InteractionRequired(request=request)
+            prompt.add("login")
+
+        if 'none' in prompt:
+            if len(prompt) > 1:
+                msg = "Prompt none is mutually exclusive with other values."
+                raise errors.InvalidRequestError(request=request, description=msg)
+            # 'none' value disable all user interaction, so, if it required, error will be raised.
+            # Also check 'max_age'
+            if await aw(self.request_validator.is_user_login_required(request)):
+                raise errors.InteractionRequired(request=request)
+            if await aw(self.request_validator.is_user_consent_required(request)):
+                raise errors.InteractionRequired(request=request)
 
         if request.ui_locales is not None and not isinstance(request.ui_locales, list):
             request.ui_locales = parse_language_tags(request.ui_locales)
@@ -452,60 +491,62 @@ class GrantTypeBase:
                 request.login_hint = normalize_email(request.login_hint)
             elif is_phone_number(request.login_hint):
                 request.login_hint = normalize_phone_number(request.login_hint)
+            elif not is_login(request.login_hint):
+                # Additional constrain violation, delete hint
+                request.login_hint = None
 
         claims_validate(request)
+        if request.max_age is not None:
+            set_claims_auth_time_essential(request)
 
-        if request.user is not None:
-            # Early user match if user login in provider
-            # If client expect another login user we must return error
-            sub = get_claims_sub_value(request)
-            if request.id_token_hint is not None or sub is not None:
-                if not await aw(self.request_validator.is_user_match(sub, request)):
-                    raise errors.LoginRequired(description="User session mismatch")
+        # Early EndUser matching. Require "select_account" on frontend if mismatch
+        request.store["user_mismatch"] = False
+        sub = get_claims_sub_value(request)
+        if request.id_token_hint is not None or sub is not None:
+            if not await aw(self.request_validator.is_user_match(sub, request)):
+                if 'none' in prompt:
+                    raise errors.InteractionRequired(request=request)
+                prompt.add("select_account")
+                request.store["user_mismatch"] = True
+        if 'none' not in prompt and request.max_age > 0:
+            if await aw(self.request_validator.is_user_login_required(request)):
+                prompt.add("login")
 
         if return_result:
-            if request.user is None:
-                # Minimal information for frontend because user is not authenticated
-                request_info = {
-                    # How frontend display user invocation
-                    'display': request.display,
-                    # Preferred languages for frontend
-                    'ui_locales': request.ui_locales,
-                    # Guessing about user login, not validated
-                    'login_hint': request.login_hint,
-                }
-                return request_info
-            # For authenticated user information for frontend.
             request_info = {
+                'oidc': True,
                 # How frontend display user invocation
-                'display': request.display,
+                'display': request.display.strip(),
                 # Required constrains
-                'prompt': prompt,
+                'prompt': list(prompt),
                 # Preferred languages for frontend
                 'ui_locales': request.ui_locales,
-                # Requested claims (request to user information)
-                'claims': request.claims
+                # login_hint set by 'is_user_match' or from request
+                'login_hint': request.login_hint,
             }
             return request_info
         return None
 
     async def oidc_authorization_match_user(self, request: Request):
-        # On this stage End-User Reference MUST be presented
-        if request.user is None:
-            raise errors.ServerError("Unexpected server state")
-        # If user deny access on provider frontend
+        # Check explicit user deny for authentication request
         if await aw(self.request_validator.is_user_access_denied(request)):
             raise errors.AccessDeniedError(request=request)
         if request.scopes is None or 'openid' not in request.scopes:
+            # https://datatracker.ietf.org/doc/html/rfc9470
+            if request.max_age is not None or request.acr_values is not None:
+                if await aw(self.request_validator.is_user_login_required(request)):
+                    raise errors.LoginRequired(request=request)
+            return
+        if 'none' in request.prompt:
+            # Checks below already done if prompt is 'none' (Early checks mode)
             return
         # If client expect another login user we must return error
-        sub = get_claims_sub_value(request)
-        if request.id_token_hint is not None or sub is not None:
-            if not await aw(self.request_validator.is_user_match(sub, request)):
-                raise errors.LoginRequired(description="User session mismatch")
-        # If required user reauthentication
+        if request.store.get("user_mismatch", False):
+            raise errors.LoginRequired(description="User session mismatch")
         if await aw(self.request_validator.is_user_login_required(request)):
             raise errors.LoginRequired(request=request)
-        # If required user consent
         if await aw(self.request_validator.is_user_consent_required(request)):
-            raise errors.ConsentRequired(request=request)
+            if "consent" in request.prompt:
+                raise errors.ConsentRequired(request=request)
+            else:
+                raise errors.AccountSelectionRequired(request=request)

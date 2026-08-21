@@ -1,536 +1,483 @@
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
-from oauth2lib.common import Request
+from sqlalchemy import select
+from sqlalchemy.orm import load_only
+import json_adapter as json
+
+from oauth2lib.common import Request, safe_string_equals
+from oauth2lib.tokens import claims_extracting
 from oauth2lib.validators import RequestValidator, ClientRepresentation, UserRepresentation
+from oauth2lib.validators.claims import is_email, is_phone_number, is_login, normalize_email, normalize_phone_number
+from .tokens import get_subject_id
+from ..control.hooks import (get_client_authorize_options, get_nonce_by_key_hook, validate_jti_hook,
+                             transform_scopes_hook, within_scopes_hook)
+from .special import frontend_client_id, frontend_params
+
+from ..models import OAuth2Client, User, OAuth2Code, OAuth2DeviceCode, GrantType, UserLock
 
 __all__ = ["request_validator"]
+
+from ..settings import function_settings
 
 
 class MyRequestValidator(RequestValidator):
     # -*- Client processing section -*-
 
     async def client_identification(self, request: Request) -> ClientRepresentation | None:
-        """
-            # Inner id for clients
-            id: Mapped[int] = mapped_column(primary_key=True)
-            # Display name of client for End-User
-            display_name: Mapped[str] = mapped_column(nullable=False)
-            # client_id as client login
-            client_id: Mapped[int] = mapped_column(nullable=False, unique=True, index=True)
-            # Enable or disable client
-            enabled: Mapped[bool] = mapped_column(nullable=False, server_default="TRUE")
-            # Confidential client or not
-            confidential: Mapped[bool] = mapped_column(nullable=False, server_default="FALSE")
-            # Client bound to user (local user client) (If users can register new clients)
-            for_user_id: Mapped[int | None] = mapped_column(ForeignKey("oauth2_user.id", ondelete='CASCADE'),
-                                                            nullable=True, index=True)
-            # Semicolon-separated list of allowed response types (if grant type equals 'authorization_code' or 'implicit')
-            _response_types: Mapped[str] = mapped_column("response_types", nullable=True)
-            # Grant type enabled for this client (only one allowed, exclude refresh_token)
-            grant_type: Mapped[GrantType] = mapped_column(String, nullable=False, server_default="authorization_code")
-            # Space-delimited default (and interpret as minimal) scope values (End-User must allow all of this)
-            # If client explicit request less scopes that it's presented, explicit scope will be used
-            scope: Mapped[str] = mapped_column(nullable=False, server_default="")
-            # Space-delimited max scope values that this client can request
-            # If client explicit request more scopes than max_scopes, provider may truncate scopes or reject request
-            max_scope: Mapped[str] = mapped_column(nullable=True)
-            # Tab-separated list of registered redirect_uris for client (used only for 'authorization_code' and 'implicit')
-            # If contains only one redirect_uri, it is interpreting as default value
-            _redirect_uris: Mapped[str] = mapped_column(nullable=True)
-            # Special client, if True grant_type must be 'password'
-            # and 'scope', 'redirect_uris', 'for_user_id', lifetimes, 'reauthenticated_at' ignored (derived from frontend)
-            # Client acts as user-agent (provider frontend)
-            # Used as alternative variant for browser-based system applications.
-            # Don't set this flag for third-party clients
-            transparent: Mapped[bool] = mapped_column(nullable=False, server_default="FALSE")
-            # Redefines timing
-            # Lifetime of our access token in minutes. Must be smaller
-            access_lifetime: Mapped[int] = mapped_column(nullable=True)
-            # Authentication max_age in seconds. Time after that required reauthentication for sensitive operations.
-            reauthenticated_at: Mapped[int] = mapped_column(nullable=True)
-            # Enable token bounds settings
-            access_ip_bound: Mapped[bool] = mapped_column(nullable=False, server_default="FALSE")
-            refresh_ip_bound: Mapped[bool] = mapped_column(nullable=False, server_default="FALSE")
-            dpop_bound: Mapped[bool] = mapped_column(nullable=False, server_default="FALSE")
-        """
-        client = request.db.execute()
-        raise NotImplementedError("Subclasses must implement this method.")
+        # This method called only if /authorize method called
+        # But special frontend client not use this method
+        if request.client_id == frontend_client_id:
+            return None
+        # Select from database client for perform /authorize method
+        client: OAuth2Client = await request.db.scalar(select(OAuth2Client).options(load_only(
+            OAuth2Client.id, OAuth2Client.display_name, OAuth2Client.enabled,
+            OAuth2Client.confidential, OAuth2Client.for_user_id, OAuth2Client._redirect_uris,
+            OAuth2Client._response_types, OAuth2Client.scope, OAuth2Client.max_scope, OAuth2Client.transparent
+        )).filter_by(client_id=request.client_id))
+        if client is None:
+            return None
+        if not client.enabled:
+            return None
+        # Transparent client acts as user-agent (as frontend, other words), so /authorise method not allowed
+        if client.transparent:
+            return None
+        if client.for_user_id is not None:
+            if client.for_user_id != request.user.id:
+                return None
+        request.store["client"] = client
+        return ClientRepresentation(
+            id=client.id,
+            client_id=request.client_id,
+            display_name=client.display_name
+        )
 
-    async def get_client_options(self, request: Request) -> dict[str, Any]:
-        """
-        This method called to create info about request to frontend.
-
-        You can add full list of claims or other frontend parameters.
-
-        These parameters send to frontend by library for OAuth2 if request.user is not None:
-            - "client_id": request.client_id,
-            - "display_name": request.client.display_name,
-            - "requested_scopes": request.scopes,
-            - "default_scopes": self.request_validator.get_default_scopes(request),
-            - "options": await self._aw(self.request_validator.get_client_options(request)),
-        And if request.user is None:
-            - "client_id": request.client_id,
-            - "display_name": request.client.display_name,
-        Because if user is not authenticated other fields are useless.
-
-        Method is used by endpoints:
-            - /authorization -- Implicit OAuth2 grant or Hybrid OIDC grant on validation stage
-        """
-        return {}
+    @staticmethod
+    async def get_client_options(request: Request) -> dict[str, Any]:
+        # Form client options for frontend to display
+        client: OAuth2Client = request.store["client"]
+        options = {
+            "max_scopes": client.max_scopes,
+            "confidential": client.confidential,
+        }
+        options.update(await get_client_authorize_options(request.client.id))
+        return options
 
     async def client_authentication_required(self, request: Request) -> bool:
-        """
-        This method called to determine whether authentication with client credentials is required
-
-        According to the rfc6749, client authentication is required in the following cases:
-            - Client type is Confidential
-            - Client was issued client credentials
-            - Client supply its client credentials (even if they are not registered on the provider)
-
-        Method is used by endpoints:
-            - /token -- Obtaining access token by specified grant (RFC6749 and OIDC Core specification)
-            - /device_authorization -- Start authorization process for device (RFC 8628)
-            - /introspect -- Introspect issued token by client
-            - /revoke -- Revoke issued token by client
-        """
-        raise NotImplementedError("Subclasses must implement this method.")
+        # This special client not require authentication
+        if request.client_id == frontend_client_id:
+            # If credentials specified, must validate its
+            return request.has_credentials()
+        request.validate_client_credentials()
+        client: OAuth2Client = await request.db.scalar(select(OAuth2Client).options(load_only(
+            OAuth2Client.id, OAuth2Client._client_secret, OAuth2Client.enabled,
+            OAuth2Client.confidential, OAuth2Client.transparent, OAuth2Client.dpop_bound
+        )).filter_by(client_id=request.client_id))
+        if client is None:
+            return request.has_credentials()
+        if not client.enabled:
+            return request.has_credentials()
+        request.store["client"] = client
+        if client.confidential or client.client_secret is not None:
+            return True
+        return request.has_credentials()
 
     async def authenticate_client(self, request: Request) -> ClientRepresentation | None:
-        """
-        This method called when required client authentication by its credentials.
-
-        This library support three methods for obtaining client credentials:
-        - client_credentials_basic:
-            Registered in OAuth2 HTTP Basic method where credentials send in Authorization header.
-            use *request.client_credentials_basic* to obtain (client_id, client_secret) pair.
-        - client_credentials_post:
-            Registered in OAuth2 x-www-urlencoded form method where credentials send in body parameters.
-            use *request.client_credentials_post* to obtain (client_id, client_secret) pair.
-        - client_credentials_token:
-            Not registered in OAuth2 method utilizing bearer access token authentication.
-            This token obtained by client_credentials grant if it allowed for client.
-            use *request.client_from_request* to obtain client_representation
-            This method worked trow authentication package.
-
-        Method is used by endpoints:
-            - /token -- Obtaining access token by specified grant (RFC6749 and OIDC Core specification)
-            - /device_authorization -- Start authorization process for device (RFC 8628)
-            - /introspect -- Introspect issued token by client
-            - /revoke -- Revoke issued token by client
-        """
-        raise NotImplementedError('Subclasses must implement this method.')
+        # 'client_authentication_required' already validate credentials, now verify its
+        client: OAuth2Client = request.store.get("client")
+        if client is None:
+            return None
+        # Try extract from post
+        _, client_secret = request.client_credentials_post
+        if client_secret is None:
+            # Otherwise extract from basic
+            _, client_secret = request.client_credentials_basic
+        # If not credentials specified, but required
+        if client_secret is None:
+            return None
+        # Verify client_secret
+        if not client.verify_client_secret(client_secret):
+            return None
+        # Return client representation
+        return ClientRepresentation(
+            id=client.id,
+            client_id=request.client_id,
+        )
 
     async def authenticate_client_id(self, request: Request) -> ClientRepresentation | None:
-        """
-        This method called when client authentication by its credentials is not applicable:
-        *client_authentication_required* return False
-
-        This method must be called only if client type is Public and client credentials is not supplied.
-
-        use *request.client_id* to access client_id
-
-        Method is used by endpoints:
-            - /token -- Obtaining access token by specified grant (RFC6749 and OIDC Core specification)
-            - /device_authorization -- Start authorization process for device (RFC 8628)
-            - /introspect -- Introspect issued token by client
-            - /revoke -- Revoke issued token by client
-        """
-        raise NotImplementedError('Subclasses must implement this method.')
+        # Authentification not required, so simple validate that client exists
+        client: OAuth2Client = request.store.get("client")
+        if client is None:
+            if request.client_id == frontend_client_id:
+                # Special frontend client
+                return ClientRepresentation(
+                    id=None,
+                    client_id=frontend_client_id,
+                )
+            return None
+        return ClientRepresentation(
+            id=client.id,
+            client_id=request.client_id,
+        )
 
     async def is_client_pkce_required(self, request: Request) -> bool:
-        """
-        This method called when extended mechanism of authentication is required.
-        By default, this extension is not required, but you can require it for public or all clients.
-        if client provided PKCE, this will be processed.
-
-        RFC7636:
-        OAuth 2.0 public clients utilizing the Authorization Code Grant are
-        susceptible to the authorization code interception attack.  This
-        specification describes the attack as well as a technique to mitigate
-        against the threat through the use of Proof Key for Code Exchange
-        (PKCE, pronounced "pixy").
-
-        Method is used by endpoints:
-            - /authorization -- If AuthorizationCode Grant
-            - /token -- If AuthorizationCode Grant
-        """
-        return False
+        return (request.code_challenge is not None or
+                request.code_verifier is not None or
+                not request.store["client"].confidential)
 
     async def get_client_origin(self, request: Request) -> str | bool:
-        """
-        This method is called to check request Origin and perform CORS header for browser-based public clients,
-        that use /token and some other endpoints, because browser uses CORS for protection user.
-
-        if return False:
-            Cross-Origin checking disabled. Request will be processed, but browser will reject response in cors mode.
-        if return True:
-            Cross-Origin checking disabled. Any origin received in Origin header will be added to Allowed Origin header.
-        if return str:
-            Cross-Origin checking enabled. If origin from header not equal, request will be discarded with error.
-
-        Method is used by endpoints:
-            - /token
-            - /introspect
-            - /revoke
-            - /userinfo
-        """
+        if request.client_id == frontend_client_id:
+            # Special frontend client, origin not allowed
+            return False
+        client: OAuth2Client = request.store["client"]
+        if client.confidential or client.transparent:
+            # Confidential client not allow origin.
+            return False
+        _ = await client.awaitable_attrs._redirect_uris
+        redirect_uris = client.redirect_uris
+        requested_origin = request.headers.get("Origin", "")
+        for uri in redirect_uris:
+            c = urlsplit(uri)
+            uri: str = urlunsplit((c[0], c[1], "", "", ""))
+            if requested_origin == uri:
+                return uri
         return False
 
-    async def is_client_dpop_required(self, request: Request) -> bool:
-        """
-        This method called when DPoP tokens is required.
-        By default, this extension is not required, but you can require it for clients.
-        if client provided DPoP header, this method not called
+    @staticmethod
+    async def is_client_dpop_required(request: Request) -> bool:
+        if request.client_id == frontend_client_id:
+            # Special frontend client, dpop not required
+            return False
+        client: OAuth2Client = request.store["client"]
+        return await client.awaitable_attrs.dpop_bound
 
-        Method is used by endpoints:
-            - /token
-        """
-        return False
+    @staticmethod
+    async def get_client_dpop_nonce(request: Request) -> str | None:
+        # Request hook with cache key 'client_id' for nonce value
+        return await get_nonce_by_key_hook(request.client_id)
 
-    async def get_client_dpop_nonce(self, request: Request) -> str | None:
-        """
-        This method called when client used DPoP.
-
-        This nonce must be included in DPoP token.
-        Must be short-lived.
-
-        If client not add nonce value in DPoP token, value (if is not None) from this method
-        returned as required nonce. So, you must not return new value at all calls of this method.
-
-        None if disabled nonce check
-        """
-        return None
-
-    async def is_client_dpop_valid_jti(self, request: Request, iat: datetime, dpop_jti: str) -> bool:
-        """
-        This method called when client used DPoP.
-
-        You must check than value not used before and save this value as used.
-
-        dpop_jti value must be unique and not used before in time window of validity (in this library its 30 seconds)
-
-        iat - issue time as datetime object in utc timezone.
-        dpop_jti - DPOP JTI value to check
-
-        return True if disabled check
-        """
-        return True
+    @staticmethod
+    async def is_client_dpop_valid_jti(request: Request, iat: datetime, dpop_jti: str) -> bool:
+        # Request hook with dpop_jti and iat for validating once use for this dpop (or several)
+        return await validate_jti_hook(dpop_jti, iat)
 
     # -*- redirect_uri processing section -*-
 
     async def get_default_redirect_uri(self, request: Request) -> str | None:
-        """
-        Its method called, if client not specify redirect_uri parameter.
-        Its parameter is optional for OAuth2 /authorize and required in other scenarios.
-
-        According to the rfc6749, if for client registered more than one redirect URI,
-        client must set redirect_uri parameter.
-        So, this method must return default redirect_uri only if default redirect_uri exists.
-        Also, URI must be absolute.
-
-        Method is used by endpoints:
-            - /authorization -- Only if AuthorizationCode Grant applied, otherwise redirect_uri is required from client.
-        """
-        raise NotImplementedError('Subclasses must implement this method.')
+        client: OAuth2Client = request.store["client"]
+        _ = await client.awaitable_attrs._redirect_uris
+        redirect_uris = client.redirect_uris
+        if len(redirect_uris) == 1:
+            return redirect_uris[0]
+        return None
 
     async def is_valid_redirect_uri(self, request: Request) -> bool:
-        """
-        Its method called for check that redirect_uri is registered for client.
-
-        Method is used by endpoints:
-            - /authorization -- if client send redirect_uri parameter.
-        """
-        raise NotImplementedError('Subclasses must implement this method.')
+        client: OAuth2Client = request.store["client"]
+        _ = await client.awaitable_attrs._redirect_uris
+        redirect_uris = client.redirect_uris
+        for uri in redirect_uris:
+            if safe_string_equals(request.redirect_uri, uri):
+                return True
+        return False
 
     # -*- scope processing section -*-
 
     async def get_default_scopes(self, request: Request) -> list[str]:
-        """
-        Its method called if client not specify scope parameter.
-        it must be default (maybe minimal) scopes.
-        Also, if client registered as OIDC, scopes must contain 'openid' and may contain claims scope values:
-        'profile', 'email', 'address', 'phone'.
-
-        Method is used by endpoints, that receive scope parameter.
-        """
-        raise NotImplementedError('Subclasses must implement this method.')
+        if request.client_id == frontend_client_id:
+            # Special frontend client, dpop not required
+            user: User = await request.db.scalar(select(User).options(load_only(
+                User.id, User.scope
+            )).filter_by(id=request.user.id))
+            return user.scopes
+        client: OAuth2Client = request.store["client"]
+        if client.transparent:
+            user: User = await request.db.scalar(select(User).options(load_only(
+                User.id, User.scope
+            )).filter_by(id=request.user.id))
+            return user.scopes
+        else:
+            _ = await client.awaitable_attrs.scope
+            return client.scopes
 
     async def transform_scopes(self, request: Request) -> list[str] | None:
-        """
-        Validate and transform scopes from request.
-
-        !!WARNING BEGIN!!
-        You must ignore openid scope value because it's a flag to change OAuth2 flow to OIDC flow:
-        don't remove this scope if present and don't add if missing.
-        !!WARNING END!!
-
-        According to the rfc6749, if client requested wrong scopes, server may return error
-        or change scope value to valid.
-
-        if we need return error this method must return None.
-        if scopes modified, or unchanged this method must return scopes.
-
-        Method is used by endpoints, that receive scope parameter.
-        """
-        raise NotImplementedError('Subclasses must implement this method.')
+        if request.client_id == frontend_client_id:
+            # Frontend client worked only with full user scope, scope from request ignored
+            user: User = await request.db.scalar(select(User).options(load_only(
+                User.id, User.scope
+            )).filter_by(id=request.user.id))
+            return user.scopes
+        client: OAuth2Client = request.store["client"]
+        if client.transparent:
+            # As frontend client
+            user: User = await request.db.scalar(select(User).options(load_only(
+                User.id, User.scope
+            )).filter_by(id=request.user.id))
+            return user.scopes
+        # Call transform hook with requested scopes and maximum scopes for client
+        _ = await client.awaitable_attrs.max_scope
+        return await transform_scopes_hook(request.scopes, client.max_scopes)
 
     async def get_refresh_token_scopes(self, request: Request) -> list[str]:
-        """
-        This method called to receive scopes binding to refresh_token
-
-        When we generate new access_token, requested scope must be equal or less than refresh_token store.
-        If refresh token rotated, its scope may be stay same or less.
-
-        Method is used by endpoints:
-            - /token -- Obtaining access token by refresh grant
-        """
-        raise NotImplementedError('Subclasses must implement this method.')
+        return request.store["refresh_scopes"]
 
     async def is_within_refresh_token_scopes(self, refresh_scopes: list[str], request: Request) -> bool:
-        """
-        This method called to check that requested scopes is within the refresh token scopes.
-
-        default check is simple include check for all requested scopes in scopes bound to refresh token.
-
-        Method is used by endpoints:
-            - /token -- Obtaining access token by refresh grant
-        """
-        return not all(s in refresh_scopes for s in request.scopes)
+        return await within_scopes_hook(request.scopes, refresh_scopes)
 
     # -*- code processing section -*-
 
-    async def get_authorization_code_challenge(self, request: Request) -> str | None:
-        """
-        This method called to receive code_challenge bound to code if it exists.
-
-        If return, PKCE will be processed for request.
-
-        Method is used by endpoints:
-            - /token -- Only AuthorizationCode Grant.
-        """
-        return None
+    @staticmethod
+    async def get_authorization_code_challenge(request: Request) -> str | None:
+        return request.store.get("code_challenge")
 
     async def get_authorization_code_challenge_method(self, request: Request) -> str:
-        """
-        This method called to receive code_challenge_method bound to code.
-
-        Method called if method get_code_challenge return value and request has code_verifier.
-
-        Method is used by endpoints:
-            - /token -- Only AuthorizationCode Grant.
-        """
-        raise NotImplementedError('Subclasses must implement this method.')
+        return request.store["code_challenge_method"]
 
     async def get_authorization_code_nonce(self, request: Request) -> str | None:
-        """
-        This method called to receive nonce bound to code.
-
-        Nonce must be included to id_token if presented.
-
-        Method is used by endpoints:
-            - /token -- Only AuthorizationCode Grant if OIDC.
-        """
-        raise NotImplementedError('Subclasses must implement this method.')
+        return request.store.get("code_nonce")
 
     async def get_authorization_code_redirect_uri(self, request: Request) -> str | None:
-        """
-        This method called to receive redirect_uri bound to code.
-
-        If it not bound (if not specified in authorization request), return None
-
-        Method is used by endpoints:
-            - /token -- Only AuthorizationCode Grant if OIDC.
-        """
-        raise NotImplementedError('Subclasses must implement this method.')
+        return request.store.get("code_redirect_uri")
 
     async def get_authorization_code_dpop_jkt(self, request: Request) -> str | None:
-        """
-        Return bound dpop_jkt value if exists
-        """
-        raise NotImplementedError('Subclasses must implement this method.')
+        return request.store.get("code_dpop_jkt")
 
     async def save_authorization_code(self, code_info: dict, request: Request):
-        """
-        This method must persist authorization code and bound values.
-
-        Bound values list:
-            - client (code must be bound to client that initiate authorization.)
-            - user (code must be bound to user that grant access)
-            - redirect_uri (if request.is_default_redirect_uri is False)
-            - scope or scopes (Optional, for later bind this value to tokens)
-            - code_challenge & code_challenge_method (if PKCE enabled for request)
-            - nonce (if it OIDC request and its present in request)
-            - claims (if it OIDC request and its present in request)
-            - state (optional, may not present in request)
-            - dpop_jkt (if present in request)
-
-        code_info contains field:
-            - code
-            - redirect_uri (if request.is_default_redirect_uri is False)
-            - code_challenge & code_challenge_method (if PKCE enabled for request)
-            - nonce (if it OIDC request and its present in request)
-            - state (is present in request)
-
-        Method is used by endpoints:
-            - /authorization -- If AuthorizationCode Grant used
-        """
-        raise NotImplementedError('Subclasses must implement this method.')
+        code = OAuth2Code()
+        code.code = code_info["code"]
+        code.user_id = request.user.id
+        code.client_id = request.client.id
+        code.scope = request.scope
+        code.redirect_uri = code_info.get("redirect_uri")
+        code.code_challenge = code_info.get("code_challenge")
+        code.code_challenge_method = code_info.get("code_challenge_method")
+        code.nonce = code_info.get("nonce")
+        code.claims = json.dumps(request.claims) if request.claims is not None else None
+        code.dpop_jkt = request.dpop_jkt
+        code.expire_at = datetime.now(tz=timezone.utc) + timedelta(minutes=2)
+        request.db.add(code)
+        await request.db.commit()
 
     async def save_device_code(self, code_info: dict, request: Request):
-        """
-        This method must persist device authorization code, user authorization code and bound values.
-
-        Bound values list:
-            - client (codes must be bound to client that initiate authorization.)
-            - scope or scopes (Optional, for later bind this value to tokens)
-            - expires_in (you can change value) (it's default time for code expiration, you must check if code expired)
-            - interval (you can change value) (it's default interval for pull token request, you must check if too many requests)
-
-        code_info contains field:
-            - device_code
-            - user_code
-            - expires_in (it's default time for code expiration, you must check if code expired)
-            - interval (it's default interval for pull token request, you must check if too many requests)
-
-        Method is used by endpoints:
-            - /device_authorization -- Device authorization process
-        """
-        raise NotImplementedError('Subclasses must implement this method.')
+        code = OAuth2DeviceCode()
+        code.device_code = code_info["device_code"]
+        code.user_code = code_info["user_code"]
+        code.client_id = request.client.id
+        code.scope = request.scope
+        code.interval = code_info["interval"]
+        code.expire_at = datetime.now(tz=timezone.utc) + timedelta(seconds=code_info["expires_in"])
+        request.db.add(code)
+        await request.db.commit()
 
     async def restore_by_authorization_code(self, request: Request) -> bool:
-        """
-        This method called to validate authorization code and restore bound information.
-
-        Need operations:
-            - Validate that code is valid for client (issued for it, not expired, etc.)
-            - Restore user representation, bounded to code (set it in request.user)
-            - Restore redirect_uri bound to code (if exists)
-            - Restore scopes bound to code (set it in request.scopes) (otherwise get_default_scopes will be called)
-            - Restore code_challenge & code_challenge_method (if PKCE was being enabled)
-            - Restore nonce (if it OIDC request and its was being saved)
-            - Restore claims (if it OIDC request and its was being saved)
-
-        Method must return True if code is valid and restore successful otherwise return False.
-
-        Method is used by endpoints:
-            - /token -- Obtaining access token by AuthorizationCode grant
-        """
-        raise NotImplementedError('Subclasses must implement this method.')
+        code: OAuth2Code = await request.db.scalar(select(OAuth2Code).filter_by(
+            code=request.code, client_id=request.client.id)
+        )
+        if code is None:
+            return False
+        if code.expire_at < datetime.now(tz=timezone.utc):
+            await request.db.delete(code)
+            await request.db.commit()
+            return False
+        request.scope = code.scope
+        request.user = UserRepresentation(id=code.user_id)
+        if code.redirect_uri is not None:
+            request.store["code_redirect_uri"] = code.redirect_uri
+        if code.code_challenge is not None:
+            request.store["code_challenge"] = code.code_challenge
+            request.store["code_challenge_method"] = code.code_challenge_method
+        if code.nonce is not None:
+            request.store["code_nonce"] = code.nonce
+        if code.claims is not None:
+            request.claims = json.loads(code.claims)
+        if code.dpop_jkt is not None:
+            request.store["code_dpop_jkt"] = code.dpop_jkt
+        return True
 
     async def get_device_code_error_status(self, request: Request) -> str | None:
-        """
-        This method called to validate device code
-        and must return None if code is valid and user grant access.
-
-        Otherwise, method must return one of error state:
-            - invalid_grant
-                Device code is invalid (not existed or not bound to authenticated client)
-            - authorization_pending
-                Device code is valid but user still is not authorized by user_code
-            - slow_down
-                Device code is valid but client send too many requests and must slow down.
-            - access_denied
-                User authorized by user_code but rejected client, pulling session is closed.
-            - expired_token
-                Device code was expired, pulling session is closed.
-
-        Method is used by endpoints:
-            - /token -- Obtaining access token by DeviceCode grant
-        """
-        raise NotImplementedError('Subclasses must implement this method.')
+        code: OAuth2DeviceCode = await request.db.scalar(select(OAuth2DeviceCode).filter_by(
+            device_code=request.device_code, client_id=request.client.id)
+        )
+        if code is None:
+            return "invalid_grant"
+        now = datetime.now(tz=timezone.utc)
+        if code.expire_at < now:
+            await request.db.delete(code)
+            await request.db.commit()
+            return "expired_token"
+        if code.last_pull + timedelta(seconds=code.interval) > now:
+            return "slow_down"
+        if code.approved is None:
+            return "authorization_pending"
+        if not code.approved:
+            await request.db.delete(code)
+            await request.db.commit()
+            return "access_denied"
+        request.store["code_scope"] = code.scope
+        request.store["code_user"] = UserRepresentation(id=code.user_id)
+        return None
 
     async def restore_by_device_code(self, request: Request) -> bool:
-        """
-        This method called to restore bound information for device code if user grant access.
-
-        Need operations:
-            - Restore user representation, bounded to code (set it in request.user)
-            - Restore scopes bound to code (set it in request.scopes) (otherwise get_default_scopes will be called)
-
-        Method must return True if restore successful otherwise return False.
-
-        Method is used by endpoints:
-            - /token -- Obtaining access token by DeviceCode grant
-        """
-        raise NotImplementedError('Subclasses must implement this method.')
+        request.scope = request.store.get("code_scope")
+        request.user = request.store.get("code_user")
+        if request.user is None:
+            return False
+        return True
 
     async def forgot_authorization_code(self, request: Request):
-        """
-        This method called to mark as used authorization code and forgot its bound information.
-
-        Its method will be called after successful /token request with authorization_code grant.
-        Its method will not be called if code is expired or other reasons.
-
-        Method is used by endpoints:
-            - /token -- Obtaining access token by AuthorizationCode grant
-        """
-        raise NotImplementedError('Subclasses must implement this method.')
+        code: OAuth2Code = await request.db.scalar(select(OAuth2Code).filter_by(
+            code=request.code, client_id=request.client.id)
+        )
+        if code is not None:
+            await request.db.delete(code)
+            await request.db.commit()
 
     async def forgot_device_code(self, request: Request):
-        """
-        This method called to mark as used, expired or denied device code and forgot its bound information.
-
-        Its method will be called after successful /token request with device_code grant,
-        if device code is expired (expired_token error status),
-        if device code is denied (access_denied error status),
-        Its method will not be called for other reasons.
-
-        Method is used by endpoints:
-            - /token -- Obtaining access token by AuthorizationCode grant
-        """
-        raise NotImplementedError('Subclasses must implement this method.')
+        code: OAuth2DeviceCode = await request.db.scalar(select(OAuth2DeviceCode).filter_by(
+            device_code=request.device_code, client_id=request.client.id)
+        )
+        if code is not None:
+            await request.db.delete(code)
+            await request.db.commit()
 
     # -*- grant_type processing section -*-
 
     async def response_type_is_allowed(self, request: Request) -> bool:
-        """
-        This method called to check
-        that authenticated client is:
-            - allowed to use AuthorizationCode, Implicit or Hybrid grants (selected by value)
-            - allowed to use this response type in grant.
-
-        Method is used by endpoints:
-            - /authorization -- For AuthorizationCode, Implicit and Hybrid grants
-        """
-        raise NotImplementedError('Subclasses must implement this method.')
+        if request.client_id == frontend_client_id:
+            # Special client allow only PasswordGrant
+            return False
+        client: OAuth2Client = request.store["client"]
+        if client.transparent:
+            return False
+        _ = await client.awaitable_attrs._response_types
+        if request.response_type in client.response_types:
+            return True
+        return False
 
     async def grant_type_is_allowed(self, request: Request) -> bool:
-        """
-        This method called to check that authenticated client is allowed to use this grant type.
-
-        Method is used by endpoints:
-            - /token -- For all grant types
-        """
-        raise NotImplementedError('Subclasses must implement this method.')
+        if request.client_id == frontend_client_id:
+            # Special client allow only PasswordGrant
+            return request.grant_type == GrantType.Password.value
+        client: OAuth2Client = request.store["client"]
+        if client.transparent:
+            # For transparent clients oply password allowed
+            return request.grant_type == GrantType.Password.value
+        if request.grant_type == "refresh_token":
+            # If Refresh token emitting enabled, return True
+            return await client.awaitable_attrs.emit_refresh_token
+        if request.grant_type == await client.awaitable_attrs.grant_type:
+            return True
+        return False
 
     # -*- user processing section -*-
 
     async def authorize_user(self, request: Request) -> UserRepresentation | None:
-        """
-        This method called to authorize user by supplied username and password.
+        if is_login(request.username) and "login" in function_settings.user_login_options:
+            # Login via
+            user: User = await request.db.scalar(select(User).options(
+                load_only(User.id, User.login, User.scope, User.active, User._password)
+            ).filter_by(login=request.username))
+        elif is_email(request.username) and "email" in function_settings.user_login_options:
+            request.username = normalize_email(request.username)
+            user: User = await request.db.scalar(select(User).options(
+                load_only(User.id, User.login, User.scope, User.active, User._password)
+            ).filter_by(email=request.username, email_verified=True))
+        elif is_phone_number(request.username) and "phone" in function_settings.user_login_options:
+            request.username = normalize_phone_number(request.username)
+            user: User = await request.db.scalar(select(User).options(
+                load_only(User.id, User.login, User.scope, User.active, User._password)
+            ).filter_by(phone=request.username, phone_verified=True))
+        else:
+            return None
+        if user is None:
+            return None
+        while True:
+            user_lock: UserLock = await request.db.scalar(select(UserLock).options(
+                load_only(
+                    UserLock.id, UserLock.login_via, UserLock.login_attempt_count, UserLock.login_last_attempt_at,
+                    UserLock.mfa_via, UserLock.block, UserLock.block_reason, UserLock.deleted
+                )
+            ).filter_by(id=user.id).with_for_update())
 
-        Must return a UserRepresentation or None if user is not authorized by any reason.
-
-        Method is used by endpoints:
-            - /token -- only for ResourceOwnerPasswordCredentials grant
-        """
-        raise NotImplementedError('Subclasses must implement this method.')
+            if user_lock is None:
+                user_lock = UserLock()
+                user_lock.id = user.id
+                request.db.add(user_lock)
+                await request.db.commit()
+            else:
+                break
+        # This method worked only with passwords
+        if "pwd" not in user_lock.login_via:
+            return None
+        if user_lock.login_last_attempt_at + timedelta(hours=12) < datetime.now(tz=timezone.utc):
+            user_lock.login_attempt_count = 0
+        if function_settings.login_attempt_count != 0:
+            if function_settings.login_attempt_count < 0:
+                if user_lock.login_attempt_count >= (-function_settings.login_attempt_count):
+                    request.additional_error_fields = {
+                        "remainingAttempts": 0
+                    }
+                    return None
+            else:
+                if user_lock.login_attempt_count >= function_settings.login_attempt_count:
+                    if not user_lock.block:
+                        user_lock.block = True
+                        user_lock.block_reason = "All attempts exceeded"
+                        await request.db.commit()
+                    request.additional_error_fields = {
+                        "block": True,
+                        "blockReason": user_lock.block_reason
+                    }
+                    return None
+        user_lock.login_last_attempt_at = datetime.now(tz=timezone.utc)
+        if user_lock.deleted:
+            request.additional_error_fields = {
+                "userDeleted": True
+            }
+            return None
+        if user_lock.block:
+            request.additional_error_fields = {
+                "block": True,
+                "blockReason": user_lock.block_reason
+            }
+            return None
+        if not user.verify_password(request.password):
+            user_lock.login_attempt_count += 1
+            await request.db.commit()
+            return None
+        request.store["user_mfa_via"] = user_lock.mfa_via
+        user_lock.login_attempt_count = 0
+        await request.db.commit()
+        return UserRepresentation(id=user.id, login=user.login, active=user.active)
 
     async def is_user_match(self, sub_value: str | None, request: Request) -> bool:
         """
         This method called to check match current and expected by client user sessions.
 
+        sub_value and 'sub' claim from id_token must be valid plain or pairwise user id.
+        plain or pairwise dependent of client configuration.
+
         if sub_value is presented, validate that current user session matches sub_value,
         Then if request.id_token_hint is presented, also validate that current user session matches id_token_hint.
 
-        Only if both validation success returns True, otherwise returns False.
+        Only if both validation success and point to the same subject returns True, otherwise returns False.
+
+        Also, always set request.login_hint to requested login
 
         sub_value extracted from request.claims.id_token.sub.value if exists, None otherwise.
 
         Method is used by endpoints:
             - /authorization -- only for OIDC AuthorizationCode grant
         """
+        # Current user subject depends on current client
+        current_sub = get_subject_id(request)
+        if request.id_token_hint is not None:
+            claims = claims_extracting(
+                request.id_token_hint,
+                require=['iss', 'aud', 'sub', 'exp', 'iat'],
+                allow_expired=True
+            )
+            
         raise NotImplementedError('Subclasses must implement this method.')
 
     async def is_user_login_required(self, request: Request) -> bool:
@@ -538,7 +485,7 @@ class MyRequestValidator(RequestValidator):
         This method called to check that current user session required reauthentication.
         This method will be called if request.user presented.
 
-        if prompt value contains 'login' or equal 'none', this method will be called.
+        if prompt value contains 'login' or equal 'none' or max_age and/or arc_values specified, this method will be called.
         If return True, that error 'login_required' or 'interaction_required' will be retuned to client.
 
         prompt='none' means silent authorization process without user interaction,
@@ -557,13 +504,17 @@ class MyRequestValidator(RequestValidator):
         This method called to check that current user session required consent.
         This method will be called if request.user presented.
 
-        if prompt value contains 'consent' or equal 'none', this method will be called.
-        If return True, that error 'consent_required' or 'interaction_required' will be retuned to client.
+        if prompt value contains 'consent' or contains 'select_account' or equal 'none', this method will be called.
+        If return True, that error 'consent_required', 'account_selection_required' or 'interaction_required'
+        will be retuned to client.
 
         prompt='none' means silent authorization process without user interaction,
         so if user interaction required, error will be returned.
 
         prompt='consent' means user must be consent request, but if this method return True, consent is not happen.
+        so error will be returned.
+
+        prompt='select_account' means user must be select account, but if this method return True, account is not selected.
         so error will be returned.
 
         if OAuth2, this method also will be called, for check user consent.
@@ -598,7 +549,8 @@ class MyRequestValidator(RequestValidator):
         """
         raise NotImplementedError('Subclasses must implement this method.')
 
-    async def is_rotate_refresh_token(self, request: Request) -> bool:
+    @staticmethod
+    async def is_rotate_refresh_token(request: Request) -> bool:
         """
         This method called to determine recreate refresh token or not
         when refresh grant used.
@@ -668,7 +620,8 @@ class MyRequestValidator(RequestValidator):
         """
         raise NotImplementedError('Subclasses must implement this method.')
 
-    async def is_rotate_id_token(self, request: Request) -> bool:
+    @staticmethod
+    async def is_rotate_id_token(request: Request) -> bool:
         """
         This method called to determine recreate id token or not
         when refresh grant used.
@@ -754,6 +707,8 @@ class MyRequestValidator(RequestValidator):
         """
         raise NotImplementedError('Subclasses must implement this method.')
 
+    # -*- resource & provider processing section -*-
+
     async def get_userinfo_claims(self, request: Request) -> dict[str, Any] | str:
         """
         TODO: rewrite
@@ -796,6 +751,25 @@ class MyRequestValidator(RequestValidator):
 
         Method is used by:
             UserInfoEndpoint
+        """
+        raise NotImplementedError('Subclasses must implement this method.')
+
+    async def get_user_code_info(self, request: Request) -> dict[str, Any] | None:
+        """
+        Called when a user_code is validating
+
+        Must return dict[str, Any] with info about the user code
+        or return None (None value raise AccessDenied error)
+        """
+        raise NotImplementedError('Subclasses must implement this method.')
+
+    async def approve_user_code_info(self, request: Request) -> bool | None:
+        """
+        Called when an EndUser approve (approve is True) or reject (approve is False) user_code.
+
+        Must return bool approve status (True is success approve/reject or already approved/rejected,
+        False is user_code invalid and other non error reasons)
+        or return None (None value raise AccessDenied error)
         """
         raise NotImplementedError('Subclasses must implement this method.')
 

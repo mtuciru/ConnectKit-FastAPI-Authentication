@@ -1,297 +1,160 @@
-from fastapi import Request, APIRouter, Depends, Query, HTTPException
+from database.asyncio import AsyncSession
+from fastapi import Request, APIRouter, Depends, Response
 
-from sqlalchemy import select
-from sqlalchemy.orm import load_only
+from oauth2lib.endpoints.metadata import well_known_oauth, well_known_oidc
+from oauth2lib.tokens import get_jwks
+from .config import get_endpoints
+from ..schemes import oauth2_extra
+from ..security import authenticated_user, EndUser
+from ..settings import function_settings
+from ..utils.common import get_database
 
-from database import AsyncSession
-from ..middleware import authenticated
-from ..schemes.oauth import error_response, ClientDiscoverRequest, ClientDiscoverResponse, location_response
-from ..utils.common import get_database, responses
-from ..models import OAuth2Client
-
-__all__ = ["create_oauth_router"]
-
-_authorization_validate_extra = {
-    "requestBody": {
-        "content": {
-            "application/x-www-form-urlencoded": {
-                "schema": {
-                    "type": "object",
-                    "properties": {
-                        "client_id": {
-                            "description": "OAuth 2.0 Client Identifier",
-                            "type": "string",
-                            "default": ""
-                        },
-                        "response_type": {
-                            "description": "OAuth 2.0 Response Type value"
-                                           "that determines the authorization processing flow to be used",
-                            "type": "string",
-                            "default": "code"
-                        },
-                        "redirect_uri": {
-                            "description": "Redirection URI to which the response will be sent.",
-                            "type": "string",
-                            "default": ""
-                        },
-                        "scope": {
-                            "description": "The scope of the access request",
-                            "type": "string",
-                            "default": ""
-                        },
-                        "state": {
-                            "description": "An opaque value used by the client to maintain"
-                                           "state between the request and callback.  The authorization"
-                                           "server includes this value when redirecting the user-agent back"
-                                           "to the client.",
-                            "type": "string",
-                            "default": ""
-                        },
-                        "response_mode": {
-                            "description": "OAuth 2.0 Response Type value that determines the authorization processing flow to be used",
-                            "type": "string",
-                            "default": ""
-                        },
-                        "nonce": {
-                            "description": "OAuth 2.0 Response Type value that determines the authorization processing flow to be used",
-                            "type": "string",
-                            "default": "",
-                        },
-                        "display": {
-                            "description": "OAuth 2.0 Response Type value that determines the authorization processing flow to be used",
-                            "type": "string",
-                            "default": ""
-                        },
-                        "prompt": {
-                            "description": "OAuth 2.0 Response Type value that determines the authorization processing flow to be used",
-                            "type": "string",
-                            "default": ""
-                        },
-                        "max_age": {
-                            "description": "OAuth 2.0 Response Type value that determines the authorization processing flow to be used",
-                            "type": "string",
-                            "default": ""
-                        },
-                        "ui_locales": {
-                            "description": "OAuth 2.0 Response Type value that determines the authorization processing flow to be used",
-                            "type": "string",
-                            "default": ""
-                        },
-                        "id_token_hint": {
-                            "description": "OAuth 2.0 Response Type value that determines the authorization processing flow to be used",
-                            "type": "string",
-                            "default": ""
-                        },
-                        "login_hint": {
-                            "description": "OAuth 2.0 Response Type value that determines the authorization processing flow to be used",
-                            "type": "string",
-                            "default": ""
-                        },
-                        "acr_values": {
-                            "description": "OAuth 2.0 Response Type value that determines the authorization processing flow to be used",
-                            "type": "string",
-                            "default": ""
-                        },
-                        "claims_locales": {
-                            "description": "End-User's preferred languages and scripts for Claims being returned, "
-                                           "represented as a space-separated list of BCP47 [RFC5646] language tag values, "
-                                           "ordered by preference.",
-                            "type": "string",
-                            "default": ""
-                        },
-                        "claims": {
-                            "description": "This parameter is used to request that specific Claims be returned. "
-                                           "The value is a JSON object listing the requested Claims.",
-                            "type": "string",
-                            "default": ""
-                        },
-                        "long": {
-                            "description": "Max time session idle",
-                            "type": "boolean",
-                            "default": ""
-                        }
-                    },
-                    "required": ["client_id", "response_type"]
-                }
-            }
-        }
-    },
-}
-
-_authorization_extra = {
-
-}
+__all__ = ["create_oauth_router", "create_metadata_router"]
 
 
 def create_oauth_router() -> APIRouter:
     router = APIRouter(prefix="/oauth", tags=["oauth"])
+    endpoints = get_endpoints()
 
-    @router.post("/authorize_validate", openapi_extra=_authorization_validate_extra)
-    async def authorization_validate(request: Request):
-        pass
+    if function_settings.authorization_code_enable or function_settings.authorization_implicit_enable:
+        auth_endpoint = endpoints["authorization"]
 
-    @router.post("/authorize", openapi_extra=_authorization_extra)
-    @authenticated
-    async def authorization_process(request: Request):
-        pass
+        @router.post("/authorize_start",
+                     response_class=Response,
+                     openapi_extra=oauth2_extra.openapi_authorization_start_extra)
+        async def oauth_authorization_start(request: Request,
+                                            _user: EndUser = authenticated_user(),
+                                            db: AsyncSession = Depends(get_database)):
+            return await auth_endpoint.validate_authorization_request(request, db)
+
+        @router.post("/authorize_end",
+                     response_class=Response,
+                     openapi_extra=oauth2_extra.openapi_authorization_end_extra)
+        async def oauth_authorization_end(request: Request,
+                                          _user: EndUser = authenticated_user(),
+                                          db: AsyncSession = Depends(get_database)):
+            return await auth_endpoint.create_authorization_response(request, db)
+
+    if function_settings.authorization_device_enable:
+        device_endpoint = endpoints["device_authorization"]
+        device_verification_endpoint = endpoints["device_verification"]
+
+        @router.post("/device_authorize",
+                     response_class=Response,
+                     openapi_extra=oauth2_extra.openapi_device_authorization_extra)
+        async def oauth_device_authorization(request: Request,
+                                             db: AsyncSession = Depends(get_database)):
+            return await device_endpoint.create_device_authorization_response(request, db)
+
+        @router.post("/device_verify_start",
+                     response_class=Response,
+                     openapi_extra=oauth2_extra.openapi_device_verify_start_extra)
+        async def oauth_device_authorization(request: Request,
+                                             _user: EndUser = authenticated_user(),
+                                             db: AsyncSession = Depends(get_database)):
+            return await device_verification_endpoint.validate_device_verification_request(request, db)
+            # if not user.via_provider:
+            #     raise errors.AccessDeniedError()
+            # device_code: models.OAuth2DeviceCode = await db.scalar(select(models.OAuth2DeviceCode).options(
+            #     load_only(
+            #         models.OAuth2DeviceCode.device_code, models.OAuth2DeviceCode.user_code,
+            #         models.OAuth2DeviceCode.client_id, models.OAuth2DeviceCode.scope,
+            #         models.OAuth2DeviceCode.approved, models.OAuth2DeviceCode.expire_at
+            #     )
+            # ).filter_by(user_code=user_code))
+            # # All invalid states == expired code
+            # # if device_code is None:
+            # #     return oauth2_schemes.DeviceVerifyInfo(expired=True)
+            # # if device_code.user_id is not None and device_code.user_id != user.id:
+            # #     return oauth2_schemes.DeviceVerifyInfo(expired=True)
+            # # now = datetime.now(tz=timezone.utc)
+            # # if device_code.expire_at < now:
+            # #     return oauth2_schemes.DeviceVerifyInfo(expired=True)
+            # client: models.OAuth2Client = await db.scalar(select(models.OAuth2Client).options(
+            #     load_only(
+            #         models.OAuth2DeviceCode.device_code, models.OAuth2DeviceCode.user_code,
+            #         models.OAuth2DeviceCode.client_id, models.OAuth2DeviceCode.scope,
+            #         models.OAuth2DeviceCode.approved, models.OAuth2DeviceCode.expire_at
+            #     )
+            # ).filter_by(user_code=user_code))
+            # # TODO: Add API method for user approve device via user_code
+            # return Response()
+
+        @router.post("/device_verify_end",
+                     response_class=Response,
+                     openapi_extra=oauth2_extra.openapi_device_verify_end_extra)
+        async def oauth_device_authorization(request: Request,
+                                             _user: EndUser = authenticated_user(),
+                                             db: AsyncSession = Depends(get_database)):
+            return await device_verification_endpoint.create_device_verification_response(request, db)
+
+    if function_settings.revocation_enable:
+        revoke_endpoint = endpoints["revocation"]
+
+        @router.post("/revoke",
+                     response_class=Response,
+                     openapi_extra=oauth2_extra.openapi_revoke_extra)
+        async def oauth_revoke(request: Request,
+                               db: AsyncSession = Depends(get_database)):
+            return await revoke_endpoint.create_revocation_response(request, db)
+
+    if function_settings.introspection_enable:
+        introspect_endpoint = endpoints["introspection"]
+
+        @router.post("/introspect",
+                     response_class=Response,
+                     openapi_extra=oauth2_extra.openapi_introspect_extra)
+        async def oauth_introspect(request: Request,
+                                   db: AsyncSession = Depends(get_database)):
+            return await introspect_endpoint.create_introspect_response(request, db)
+
+    token_endpoint = endpoints["token"]
+    userinfo_endpoint = endpoints["userinfo"]
+
+    @router.post("/token",
+                 response_class=Response,
+                 openapi_extra=oauth2_extra.openapi_token_extra)
+    async def oauth_token(request: Request,
+                          db: AsyncSession = Depends(get_database)):
+        return await token_endpoint.create_token_response(request, db)
+
+    @router.get("/userinfo",
+                response_class=Response,
+                openapi_extra=oauth2_extra.openapi_userinfo_extra)
+    @router.post("/userinfo",
+                 response_class=Response,
+                 openapi_extra=oauth2_extra.openapi_userinfo_extra)
+    async def oauth_userinfo(request: Request,
+                             _user: EndUser = authenticated_user(),
+                             db: AsyncSession = Depends(get_database)):
+        return await userinfo_endpoint.create_userinfo_response(request, db)
+
+    @router.get("/jwks",
+                response_class=Response,
+                openapi_extra=oauth2_extra.openapi_jwks_extra)
+    async def oauth_jwks():
+        return Response(content=get_jwks(), status_code=200, media_type="application/json")
 
     return router
 
 
-# /client_info -- API method for access only from FRONTEND for discover requested client for OAuth2 /authorization
-# required authorized user
-# /authorization -- API method for access only from FRONTEND for realize OAuth2 authorization logic
-# required authorized user
-# /device -- API method for access only from FRONTEND for realize OAuth2 Device authorization logic
+def create_metadata_router() -> APIRouter:
+    router = APIRouter(tags=["oauth-metadata"])
+    endpoints = get_endpoints()
+    metadata_endpoint = endpoints["metadata"]
 
+    @router.get(well_known_oauth,
+                response_class=Response,
+                openapi_extra=oauth2_extra.openapi_oauth_metadata_extra)
+    async def oauth_metadata(request: Request,
+                             db: AsyncSession = Depends(get_database)):
+        return await metadata_endpoint.create_oauth_metadata_response(request, db)
 
-# @router.get("/authorize_validate", response_model=ClientDiscoverResponse, responses=responses({
-#     404: "client_not_found"
-# }))
-# async def client_info(request: Request,
-#                       params: ClientDiscoverRequest = Query(),
-#                       db: AsyncSession = Depends(get_database)):
+    @router.get(well_known_oidc,
+                response_class=Response,
+                openapi_extra=oauth2_extra.openapi_oidc_metadata_extra)
+    async def oidc_metadata(request: Request,
+                            db: AsyncSession = Depends(get_database)):
+        return await metadata_endpoint.create_oidc_metadata_response(request, db)
 
-
-@router.post("/authorization", openapi_extra={
-    "requestBody": {
-        "content": {
-            "application/x-www-form-urlencoded": {
-                "schema": {
-                    "type": "object",
-                    "properties": {
-                        "client_id": {
-                            "description": "OAuth 2.0 Client Identifier",
-                            "type": "string",
-                            "default": ""
-                        },
-                        "response_type": {
-                            "description": "OAuth 2.0 Response Type value"
-                                           "that determines the authorization processing flow to be used",
-                            "type": "string",
-                            "default": "code"
-                        },
-                        "redirect_uri": {
-                            "description": "Redirection URI to which the response will be sent.",
-                            "type": "string",
-                            "default": ""
-                        },
-                        "scope": {
-                            "description": "The scope of the access request",
-                            "type": "string",
-                            "default": ""
-                        },
-                        "state": {
-                            "description": "An opaque value used by the client to maintain"
-                                           "state between the request and callback.  The authorization"
-                                           "server includes this value when redirecting the user-agent back"
-                                           "to the client.",
-                            "type": "string",
-                            "default": ""
-                        },
-                        "response_mode": {
-                            "description": "OAuth 2.0 Response Type value that determines the authorization processing flow to be used",
-                            "type": "string",
-                            "default": ""
-                        },
-                        "nonce": {
-                            "description": "OAuth 2.0 Response Type value that determines the authorization processing flow to be used",
-                            "type": "string",
-                            "default": "",
-                        },
-                        "display": {
-                            "description": "OAuth 2.0 Response Type value that determines the authorization processing flow to be used",
-                            "type": "string",
-                            "default": ""
-                        },
-                        "prompt": {
-                            "description": "OAuth 2.0 Response Type value that determines the authorization processing flow to be used",
-                            "type": "string",
-                            "default": ""
-                        },
-                        "max_age": {
-                            "description": "OAuth 2.0 Response Type value that determines the authorization processing flow to be used",
-                            "type": "string",
-                            "default": ""
-                        },
-                        "ui_locales": {
-                            "description": "OAuth 2.0 Response Type value that determines the authorization processing flow to be used",
-                            "type": "string",
-                            "default": ""
-                        },
-                        "id_token_hint": {
-                            "description": "OAuth 2.0 Response Type value that determines the authorization processing flow to be used",
-                            "type": "string",
-                            "default": ""
-                        },
-                        "login_hint": {
-                            "description": "OAuth 2.0 Response Type value that determines the authorization processing flow to be used",
-                            "type": "string",
-                            "default": ""
-                        },
-                        "acr_values": {
-                            "description": "OAuth 2.0 Response Type value that determines the authorization processing flow to be used",
-                            "type": "string",
-                            "default": ""
-                        },
-                        "claims_locales": {
-                            "description": "End-User's preferred languages and scripts for Claims being returned, "
-                                           "represented as a space-separated list of BCP47 [RFC5646] language tag values, "
-                                           "ordered by preference.",
-                            "type": "string",
-                            "default": ""
-                        },
-                        "claims": {
-                            "description": "This parameter is used to request that specific Claims be returned. "
-                                           "The value is a JSON object listing the requested Claims.",
-                            "type": "string",
-                            "default": ""
-                        },
-                        "long": {
-                            "description": "Max time session idle",
-                            "type": "boolean",
-                            "default": ""
-                        }
-                    },
-                    "required": ["client_id", "response_type"]
-                }
-            }
-        }
-    },
-})
-@authenticated()
-async def authorization(request: Request, db: AsyncSession = Depends(get_database)):
-    try:
-        oauth2_request = await OAuth2Request.from_request(request, db)
-        await oauth2_request.extract_user()
-        await oauth2_request.extract_client()
-        response_type = oauth2_request.response_type = normalize_response_type(oauth2_request.response_type)
-        grant_type = response_types.get(response_type, oauth2_auth_grant)
-        headers, body, status = grant_type.create_authorization_response(oauth2_request, bearer_token)
-        await oauth2_request.await_tasks()
-        return location_response(headers.get("Location"))
-    except FatalClientError as e:
-        return error_response(e)
-    except OAuth2Error as e:
-        return location_response(e.in_uri(e.redirect_uri))
-
-
-@router.post("/device")
-@authenticated()
-async def device(request: Request, db: AsyncSession = Depends(get_database)):
-    pass
-
-
-@router.post("/token")
-async def token(request: Request, db: AsyncSession = Depends(get_database)):
-    pass
-
-
-@router.post("/device_authorization")
-async def device_authorization(request: Request, db: AsyncSession = Depends(get_database)):
-    pass
-
-
-@router.post("/revoke")
-async def revoke(request: Request, db: AsyncSession = Depends(get_database)):
-    pass
+    return router
